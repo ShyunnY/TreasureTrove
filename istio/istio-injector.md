@@ -67,7 +67,7 @@ securityContext:
 最后我们将端口进行转发, 就可以在goland中配置remote debug了
 
 ```shell
-$ kubectl port-forward -n istio-system --address localhost deployment/istiod 40000:40000
+$ kubectl port-forward -n istio-system --address 0.0.0.0 deployment/istiod 40000:40000
 ```
 
 
@@ -403,6 +403,360 @@ COMMIT
 
 
 
+## Istio proxy接管流量
+
+我们了解了`pilot-agent`是通过修改iptables的规则进行对应的流量劫持, 那么此时我们也会很好奇. 当流量劫持到istio-proxy(下文描述为Envoy)后, Envoy是如何处理对应的**INBOUND**和**OUTBOUND**。实际上,Envoy通过控制平面下发的XDS配置进行动态的监听流量, 路由流量等.
+
+
+
+### INBOUND
+
+我们先来看一下Envoy是如何路由iptables重定向的流量到应用上, 我们也可以理解这一过程为INBOUND. 我们将使用Envoy+httpbin充当应用容器和Sidecar Proxy容器.
+
+可以看到, 我们在initContainer中使用了pilot-agent对iptables规则进行修改, 以做到流量劫持到envoyproxy上.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mock-init-pod
+  namespace: mesh
+  labels:
+    kubernetes.io.mesh: mock-pod
+spec:
+  initContainers:
+  - args:
+    - istio-iptables
+    - -p
+    - "15001"
+    - -z
+    - "15006"
+    - -u
+    - "1337"
+    - -m
+    - REDIRECT
+    - -i
+    - '*'
+    - -x
+    - ""
+    - -b
+    - '*'
+    - -d
+    - 15090,15021,15020
+    - --log_output_level=default:info
+    image: docker.io/istio/proxyv2:1.20.1
+    name: istio-init
+    resources:
+      limits:
+        cpu: "2"
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        add:
+        - NET_ADMIN
+        - NET_RAW
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: false
+      runAsGroup: 0
+      runAsNonRoot: false
+      runAsUser: 0
+  containers:
+  - image: docker.io/kong/httpbin
+    name: httpbin
+    ports:
+    - containerPort: 80
+      name: http
+  - name: envoyproxy
+    image: envoyproxy/envoy-alpine:v1.21.0
+    imagePullPolicy: IfNotPresent
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsGroup: 1337
+      runAsNonRoot: true
+      runAsUser: 1337
+    volumeMounts:
+      - name: envoyconfig
+        mountPath: /etc/envoy/
+  volumes:
+    - name: envoyconfig
+      configMap:
+        defaultMode: 0655
+        name: envoyconfig
+```
+
+重点是看一下Envoy的配置:
+
+**主要流程:** 我们监听`0.0.0.0:15006`端口的流量, 当外部访问httpbin的INBOUND流量进来后, 首先重定向到Envoy监听的`0.0.0.0:15006`端口, 在处理filter_chains之前, 流量首先被listener_filters(其中filters的**定义顺序**很重要!)处理. 
+
+listener_filters中就3个过滤器:
+
++ 获取流量的原始目的地(这是因为流量被重定向之后, Envoy后续路由并不知道流量原始的目的地是哪里, 所以需要通过socket信息获取流量的原始目的地)
++ 检测是TLS还是明文传输
++ 检测是否是HTTP协议
+
+后续两个过滤器是为了能够在后续filter_chains中的filter_chain_match可以进行选择和匹配。
+
+然后在filter_chains中的第一个过滤器匹配目标端口为80(流量已经被*恢复*成原始目的地了), 进行路由匹配到集群上, 集群类型配置为`type: ORIGINAL_DST`, 让Envoy代理到原始目的地(PodIP)上. 你还应该注意到 `upstreamBindConfig.sourceAddress.address` 的值被改写为了 `127.0.0.6`，而且对于 Pod 内流量是通过 `lo` 网卡发送的，这刚好呼应了上文中的 iptables `ISTIO_OUTPUT` 链中的第一条规则，根据该规则，流量将被透传到 Pod 内的应用容器
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoyconfig
+  namespace: mesh
+data:
+  envoy.yaml: |
+    static_resources:
+      listeners:
+        - name: listener_0
+          address:
+            socket_address: 
+              address: 0.0.0.0
+              port_value: 15006
+          traffic_direction: INBOUND
+          # 代替use_destination_port!!!
+          # 侦听器过滤器有机会操纵和扩充用于连接过滤器链匹配的连接元数据
+          # ⭐ listener_filters在filter_chains执行前进行执行
+          # ⭐ 顺序很重要, 因为在listener接收socket之后、创建连接之前,listener_filters会按顺序处理
+          listener_filters:
+            # 使用原始目的地址(original dst address)
+            # 因为iptables将目的地址进行重定向了, 我们需要通过socket获取原始的目的端口和地址
+            # (我们可以在listener级别使用use_original_dst)
+            - name: envoy.filters.listener.original_dst
+              typed_config:
+                '@type': type.googleapis.com/envoy.extensions.filters.listener.original_dst.v3.OriginalDst
+            # 用于禁用过滤器的可选匹配谓词。当该字段为空时，过滤器启用
+            - filter_disabled:
+                # 左闭右开[start,end)
+                # 匹配15006端口
+                destination_port_range:
+                  end: 15007
+                  start: 15006
+              # 用于检测连接是TLS还是明文, 可以在FilterChainMatch中进行对应的匹配和选择, 还可以生成对应的HTTP statistic统计数据
+              name: envoy.filters.listener.tls_inspector
+              typed_config:
+                '@type': type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+            # 用于禁用过滤器的可选匹配谓词。当该字段为空时，过滤器启用
+            - filter_disabled:
+                # 或逻辑匹配, 有一个匹配都可
+                or_match:
+                  rules:
+                    - destination_port_range:
+                        end: 81
+                        start: 80172.16.247.36
+                    - destination_port_range:
+                        end: 15007
+                        start: 15006
+              # 检测协议是否为HTTP
+              # Inspector检测出对应的协议之后, 可以在FilterChainMatch中进行对应的匹配和选择, 还可以生成对应的HTTP statistic统计数据
+              name: envoy.filters.listener.http_inspector
+              typed_config:
+                '@type': type.googleapis.com/envoy.extensions.filters.listener.http_inspector.v3.HttpInspector
+          listener_filters_timeout: 0s
+          filter_chains:
+            - filter_chain_match:
+                destination_port: 80
+                transport_protocol: raw_buffer
+              name: inbound|80|listener
+              filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_http
+                    upgrade_configs:
+                      - upgrade_type: websocket
+                    codec_type: AUTO
+                    use_remote_address: false
+                    normalize_path: true
+                    path_with_escaped_slashes_action: KEEP_UNCHANGED
+                    access_log:
+                    - name: envoy.access_loggers.stdout
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                    route_config:
+                      name: inbound||80
+                      validate_clusters: false
+                      virtual_hosts:
+                        - name: inbound|http|80
+                          domains: ["*"]
+                          routes:
+                            - match: 
+                                prefix: /
+                              route:
+                                cluster: inbound|80|
+                    http_filters:
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        - name: inbound|80|
+          common_lb_config: {}
+          connect_timeout: 1s
+          type: ORIGINAL_DST
+          lbPolicy: CLUSTER_PROVIDED
+          upstream_bind_config:
+            source_address:
+              address: 127.0.0.6  
+              portValue: 0
+```
+
+
+
+
+
+### TODO: OUTBOUND
+
+
+
+outbound也是一样操作的, 只是配置了
+
+OUTBOUND:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoyconfig
+  namespace: mesh
+data:
+  envoy.yaml: |
+    static_resources:
+      listeners:
+        - name: listener_0
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: 15001
+          name: virtualOutbound
+          traffic_direction: OUTBOUND
+          use_original_dst: true
+          filter_chains:
+          - name: virtualOutbound-catchall-tcp
+            filters:
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                cluster: PassthroughCluster
+                stat_prefix: PassthroughCluster
+        - name: listener_1
+          address:
+            socket_address: 
+              address: 0.0.0.0
+              port_value: 15006
+          traffic_direction: INBOUND
+          # 代替use_destination_port!!!
+          # 侦听器过滤器有机会操纵和扩充用于连接过滤器链匹配的连接元数据
+          # ⭐ listener_filters在filter_chains执行前进行执行
+          # ⭐ 顺序很重要, 因为在listener接收socket之后、创建连接之前,listener_filters会按顺序处理
+          listener_filters:
+            # 使用原始目的地址(original dst address)
+            # 因为iptables将目的地址进行重定向了, 我们需要通过socket获取原始的目的端口和地址
+            # (我们可以在listener级别使用use_original_dst)
+            - name: envoy.filters.listener.original_dst
+              typed_config:
+                '@type': type.googleapis.com/envoy.extensions.filters.listener.original_dst.v3.OriginalDst
+            # 用于禁用过滤器的可选匹配谓词。当该字段为空时，过滤器启用
+            - filter_disabled:
+                # 左闭右开[start,end)
+                # 匹配15006端口
+                destination_port_range:
+                  end: 15007
+                  start: 15006
+              # 用于检测连接是TLS还是明文, 可以在FilterChainMatch中进行对应的匹配和选择, 还可以生成对应的HTTP statistic统计数据
+              name: envoy.filters.listener.tls_inspector
+              typed_config:
+                '@type': type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+            # 用于禁用过滤器的可选匹配谓词。当该字段为空时，过滤器启用
+            - filter_disabled:
+                # 或逻辑匹配, 有一个匹配都可
+                or_match:
+                  rules:
+                    - destination_port_range:
+                        end: 81
+                        start: 80
+                    - destination_port_range:
+                        end: 15007
+                        start: 15006
+              # 检测协议是否为HTTP
+              # Inspector检测出对应的协议之后, 可以在FilterChainMatch中进行对应的匹配和选择, 还可以生成对应的HTTP statistic统计数据
+              name: envoy.filters.listener.http_inspector
+              typed_config:
+                '@type': type.googleapis.com/envoy.extensions.filters.listener.http_inspector.v3.HttpInspector
+          listener_filters_timeout: 0s
+          filter_chains:
+            - filter_chain_match:
+                destination_port: 80
+                transport_protocol: raw_buffer
+              name: inbound|80|listener
+              filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_http
+                    upgrade_configs:
+                      - upgrade_type: websocket
+                    codec_type: AUTO
+                    use_remote_address: false
+                    normalize_path: true
+                    path_with_escaped_slashes_action: KEEP_UNCHANGED
+                    access_log:
+                    - name: envoy.access_loggers.stdout
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                    route_config:
+                      name: inbound||80
+                      validate_clusters: false
+                      virtual_hosts:
+                        - name: inbound|http|80
+                          domains: ["*"]
+                          routes:
+                            - match: 
+                                prefix: /
+                              route:
+                                cluster: inbound|80|
+                    http_filters:
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        - name: inbound|80|
+          common_lb_config: {}
+          connect_timeout: 1s
+          type: ORIGINAL_DST
+          lbPolicy: CLUSTER_PROVIDED
+          upstream_bind_config:
+            source_address:
+              address: 127.0.0.6  
+              portValue: 0  
+        - name: PassthroughCluster
+          connect_timeout: 1s
+          type: ORIGINAL_DST
+          lbPolicy: CLUSTER_PROVIDED
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              '@type': type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              common_http_protocol_options:
+                idle_timeout: 300s
+              use_downstream_protocol_config:
+                http_protocol_options: {}
+                http2_protocol_options: {}
+```
+
+
+
+
+
 ## Istio Injector分析
 
 Istio可以配置成自动向Pod注入sidecar容器和init容器, 使Pod加入ServiceMesh中.
@@ -411,7 +765,11 @@ Istio可以配置成自动向Pod注入sidecar容器和init容器, 使Pod加入Se
 
 我们来看一下Istio中关于自动注入的Injector Webhook源码
 
-**NewWebhook**主要功能:
+
+
+### NewWebhook
+
+主要功能:
 
 + 创建webhook实例
 + 获取sidecar注入相关配置
@@ -468,12 +826,281 @@ func NewWebhook(p WebhookParameters) (*Webhook, error) {
 }
 ```
 
-serveInject主要功能:
 
-+ 
+
+### serveInject
+
+主要功能:
+
++ 读取请求体数据
++ 检查请求数据格式是否为JSON
++ 将请求体的内容反序列化为AdmissionReview
++ 调用`inject`方法
++ 设置AdmissionReview返回值的元数据以及patch
++ 将AdmissionReview返回给api-server
 
 ```go
+func (wh *Webhook) serveInject(w http.ResponseWriter, r *http.Request) {
+
+	// injector Counter指标计数+1
+	totalInjections.Increment()
+	// injector Duration指标计数
+	t0 := time.Now()
+	defer func() { injectionTime.Record(time.Since(t0).Seconds()) }()
+
+	// 1. 读取请求体数据
+	var body []byte
+	if r.Body != nil {
+		// 读取kubernetes限制大小的请求体数据
+		if data, err := kube.HTTPConfigReader(r); err == nil {
+			body = data
+		} else {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+	}
+	if len(body) == 0 {
+		handleError("no body found")
+		http.Error(w, "no body found", http.StatusBadRequest)
+		return
+	}
+
+	// verify the content type is accurate
+	// 2. 检查内容类型是否准确
+	contentType := r.Header.Get("Content-Type")
+	if contentType != "application/json" {
+		handleError(fmt.Sprintf("contentType=%s, expect application/json", contentType))
+		http.Error(w, "invalid Content-Type, want `application/json`", http.StatusUnsupportedMediaType)
+		return
+	}
+
+	path := ""
+	if r.URL != nil {
+		path = r.URL.Path
+	}
+
+	var reviewResponse *kube.AdmissionResponse
+	var obj runtime.Object
+	var ar *kube.AdmissionReview
+
+	// 3. 反序列化成k8s Object
+	if out, _, err := deserializer.Decode(body, nil, obj); err != nil {
+		handleError(fmt.Sprintf("Could not decode body: %v", err))
+		reviewResponse = toAdmissionResponse(err)
+	} else {
+		log.Debugf("AdmissionRequest for path=%s\n", path)
+
+		// 将k8s obj转为 AdmissionReview
+		ar, err = kube.AdmissionReviewKubeToAdapter(out)
+		if err != nil {
+			handleError(fmt.Sprintf("Could not decode object: %v", err))
+			reviewResponse = toAdmissionResponse(err)
+		} else {
+
+			// ⭐ 调用webhook的inject方法
+			reviewResponse = wh.inject(ar, path)
+		}
+	}
+
+	// api-server发送一个AdmissionReview给webhook
+	// webhook也返回一个AdmissionReview给api-server
+	// (需要是版本相同的AdmissionReview)
+
+	// 4. 设置AdmissionReview.Response所需的数据
+	response := kube.AdmissionReview{}
+	response.Response = reviewResponse
+	var responseKube runtime.Object
+	var apiVersion string
+	if ar != nil {
+		apiVersion = ar.APIVersion
+		response.TypeMeta = ar.TypeMeta
+		if response.Response != nil {
+			if ar.Request != nil {
+				//必须设置为请求的UID
+				response.Response.UID = ar.Request.UID
+			}
+		}
+	}
+
+	// 将AdmissionReview转为K8s.object, 并进行JSON序列化
+	responseKube = kube.AdmissionReviewAdapterToKube(&response, apiVersion)
+	resp, err := json.Marshal(responseKube)
+	if err != nil {
+		log.Errorf("Could not encode response: %v", err)
+		http.Error(w, fmt.Sprintf("could not encode response: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 5. 将AdmissionReview JSON数据写入响应中, 至此inject流程全部完成
+	if _, err := w.Write(resp); err != nil {
+		log.Errorf("Could not write response: %v", err)
+		http.Error(w, fmt.Sprintf("could not write response: %v", err), http.StatusInternalServerError)
+	}
+}
 ```
 
 
 
+### inject
+
+主要功能:
+
++ 反序列化AdmissionReview.request.object的请求对象(Pod)
++ 处理Pod潜在的空字段
++ 判断该Pod是否需要执行Inject动作
++ 设置Pod一些元数据
++ 初始化InjectionParameters注入动作的参数对象, 调用`injectPod`(核心方法: 执行注入的逻辑函数)
++ 构建AdmissionResponse, 并设置注入后的JSON Patch
+
+```go
+func (wh *Webhook) inject(ar *kube.AdmissionReview, path string) *kube.AdmissionResponse {
+
+	req := ar.Request
+	var pod corev1.Pod
+
+	// 1. 反序列化AdmissionReview.request.object中请求对象
+	if err := json.Unmarshal(req.Object.Raw, &pod); err != nil {
+		handleError(fmt.Sprintf("Could not unmarshal raw object: %v %s", err,
+			string(req.Object.Raw)))
+		return toAdmissionResponse(err)
+	}
+
+	// 2. 处理Pod潜在的空字段(name,namespace)
+	// Managed fields is sometimes extremely large, leading to excessive CPU time on patch generation
+	// It does not impact the injection output at all, so we can just remove it.
+	// managed fields是一个遗留字段, 这对inject并没有作用, 同时还会增加cpu负载
+	pod.ManagedFields = nil
+	// Deal with potential empty fields, e.g., when the pod is created by a deployment
+	// 处理潜在的空字段，例如，当部署创建pod时
+	podName := potentialPodName(pod.ObjectMeta)
+	if pod.ObjectMeta.Namespace == "" {
+		pod.ObjectMeta.Namespace = req.Namespace
+	}
+	log.Infof("Sidecar injection request for %v/%v", req.Namespace, podName)
+	log.Debugf("Object: %v", string(req.Object.Raw))
+	log.Debugf("OldObject: %v", string(req.OldObject.Raw))
+
+	wh.mu.RLock()
+
+	// 3. 判断该pod是否需要执行注入injector
+	if !injectRequired(IgnoredNamespaces.UnsortedList(), wh.Config, &pod.Spec, pod.ObjectMeta) {
+
+		// 这个pod不需要被注入了(label/annotation)不满足注入规则, 直接返回response
+		log.Infof("Skipping %s/%s due to policy check", pod.ObjectMeta.Namespace, podName)
+		totalSkippedInjections.Increment()
+		wh.mu.RUnlock()
+		return &kube.AdmissionResponse{
+			Allowed: true,
+		}
+	}
+
+	// 4. TODO: 获取Sidecar的Proxy Config
+	proxyConfig := wh.env.GetProxyConfigOrDefault(pod.Namespace, pod.Labels, pod.Annotations, wh.meshConfig)
+
+	// 5. 获取Pod的Deploy元数据, 设置podNamespace
+	deploy, typeMeta := kube.GetDeployMetaFromPod(&pod)
+	var podNamespace *corev1.Namespace
+	if wh.namespaces != nil {
+		podNamespace = wh.namespaces.Get(pod.Namespace, "")
+	}
+
+	// ⭐ 6. 初始化 Inject所需的参数对象 InjectionParameters
+	params := InjectionParameters{
+		pod:                 &pod,
+		deployMeta:          deploy,
+		namespace:           podNamespace,
+		typeMeta:            typeMeta,
+		templates:           wh.Config.Templates,
+		defaultTemplate:     wh.Config.DefaultTemplates,
+		aliases:             wh.Config.Aliases,
+		meshConfig:          wh.meshConfig,
+		proxyConfig:         proxyConfig,
+		valuesConfig:        wh.valuesConfig,
+		revision:            wh.revision,
+		injectedAnnotations: wh.Config.InjectedAnnotations,
+		proxyEnvs:           parseInjectEnvs(path),
+	}
+	wh.mu.RUnlock()
+
+	// 7. ⭐ 实际注入Pod的函数
+	patchBytes, err := injectPod(params)
+	if err != nil {
+		handleError(fmt.Sprintf("Pod injection failed: %v", err))
+		return toAdmissionResponse(err)
+	}
+
+	// 8. 构建AdmissionResponse, 并设置JSON Patch
+	reviewResponse := kube.AdmissionResponse{
+		Allowed: true,
+		Patch:   patchBytes,
+		PatchType: func() *string {
+			pt := "JSONPatch"
+			return &pt
+		}(),
+	}
+	totalSuccessfulInjections.Increment()
+	return &reviewResponse
+}
+```
+
+
+
+### injectPod(⭐)
+
+**injectPod**是istio执行自动注入的核心方法, 其涵盖了自动注入的主要逻辑, 我们编写自定义注入的Webhook也可以借鉴其逻辑步骤
+
+主要功能如下:
+
++ 检查Pod的DNS policy
++ 提前保留原始Pod(originalOldPod), 将与mergePod合并后作为响应返回给K8s
++ 运行注入模板
++ 重新应用且覆盖Containers
++ 应用一些额外的转换到Pod上(例如重写Probe探针, 设置Prometheus Labels, 重排列Containers等)
++ 最后将mergePod和originalPod合并后序列化为patch bytes, 返回给上层函数inject. inject将其设置进AdmissionReview.response中
+
+```go
+func injectPod(req InjectionParameters) ([]byte, error) {
+
+	// 1. 检查Pod的DNS policy
+	checkPreconditions(req)
+
+    // 2. 提前保留原始Pod(originalOldPod), 将与mergePod合并后作为响应返回给K8s
+	originalPodSpec, err := json.Marshal(req.pod)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 运行注入模板
+	mergedPod, injectedPodData, err := RunTemplate(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to run injection template: %v", err)
+	}
+
+	// TODO 4. 重新应用且覆盖Containers
+	mergedPod, err = reapplyOverwrittenContainers(mergedPod, req.pod, injectedPodData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to re apply container: %v", err)
+	}
+
+	// 5. 应用一些额外的转换到Pod上
+	if err := postProcessPod(mergedPod, *injectedPodData, req); err != nil {
+		return nil, fmt.Errorf("failed to process pod: %v", err)
+	}
+
+	// 6. 将mergePod和originalPod合并后序列化为patch
+	patch, err := createPatch(mergedPod, originalPodSpec)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create patch: %v", err)
+	}
+
+	log.Debugf("AdmissionResponse: patch=%v\n", string(patch))
+	return patch, nil
+}
+```
+
+
+
+istio-inject Param中的模板和默认模板如下图
+
+![image-20231220164156476](assets/image-20231220164156476.png)
