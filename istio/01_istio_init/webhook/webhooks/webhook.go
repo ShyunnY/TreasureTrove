@@ -18,6 +18,7 @@ func NewWebhookServer() webhook.Server {
 	})
 
 	injectWh := NewInjectorWebhook()
+
 	// 自动注入webhook注册
 	sre.Register("/look", injectWh)
 	// 就绪探针注册(顺序很重要, 必须在webhook注册之后再进行注册, 避免空指针)
