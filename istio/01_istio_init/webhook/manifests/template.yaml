@@ -133,7 +133,7 @@ spec:
         failureThreshold: 600
         httpGet:
           path: /healthz/ready
-          port: 15021
+          port: "15021"
           scheme: HTTP
         periodSeconds: 1
         successThreshold: 1
@@ -209,5 +209,3 @@ spec:
         - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
           name: kube-api-access-wtpdh
           readOnly: true
-Resources:
-

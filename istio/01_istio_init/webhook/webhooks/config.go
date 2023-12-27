@@ -1,15 +1,17 @@
 package webhooks
 
-import "text/template"
+import (
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"text/template"
+)
 
 // Config 自动注入的配置
-// TODO: 后续需要添加watch功能
-// TODO: 我们考虑从以下两个途径获取配置信息
-// +在k8s ConfigMap中获取
-// +在webhook启动时读取文件
+// TODO: 后续需要添加watch功能 在k8s ConfigMap中获取
 type Config struct {
 	InitTemplate    *template.Template
 	SidecarTemplate *template.Template
+	ValueConfig     *Value
 }
 
 func (c *Config) setDefault() {
@@ -22,6 +24,10 @@ func (c *Config) setDefault() {
 		c.SidecarTemplate = template.Must(template.New("sidecar-containers").Parse(sidecarContainerTemplate))
 	}
 
+	if c.ValueConfig == nil {
+		c.ValueConfig = newDefaultValue()
+	}
+
 }
 
 func NewDefaultConfig() *Config {
@@ -32,83 +38,71 @@ func NewDefaultConfig() *Config {
 	return cfg
 }
 
-type TemplateData struct {
+type Value struct {
+	// sidecar proxy env
+	ProxyEnv map[string]string
+	// injector extra annotations
+	Annotations map[string]string
+	// injector extra labels
+	Labels map[string]string
+	// sidecar proxy probe
+	ProxyProbe *Probes
 }
 
-const initContainerTemplate = `
-spec:
-  initContainers:
-    - args:
-        - istio-iptables
-        - -p
-        - "15001"
-        - -z
-        - "15006"
-        - -u
-        - "1337"
-        - -m
-        - REDIRECT
-        - -i
-        - *
-        - -x
-        - ""
-        - -b
-        - *
-        - -d
-        - 15090,15021,15020
-        - --log_output_level=default:info
-      image: docker.io/istio/proxyv2:1.20.1
-      imagePullPolicy: IfNotPresent
-      name: istio-init
-      resources:
-        limits:
-          cpu: "2"
-          memory: 1Gi
-        requests:
-          cpu: 100m
-          memory: 128Mi
-      securityContext:
-        allowPrivilegeEscalation: false
-        capabilities:
-          add:
-            - NET_ADMIN
-            - NET_RAW
-          drop:
-            - ALL
-        privileged: false
-        readOnlyRootFilesystem: false
-        runAsGroup: 0
-        runAsNonRoot: false
-        runAsUser: 0
-`
+func newDefaultValue() *Value {
 
-const sidecarContainerTemplate = `
-apiVersion: v1
-kind: Pod
-spec:
-  volume:
-	- name: envoyconfig
-      configMap:
-        defaultMode: 0655
-        name: envoyconfig
-		items:
-		  - key: envoy.yaml
-			path: envoy.yaml
-  containers:
-  - name: envoyproxy
-    image: envoyproxy/envoy-alpine:v1.21.0
-    imagePullPolicy: IfNotPresent
-    securityContext:
-      allowPrivilegeEscalation: false
-      capabilities:
-        drop:
-        - ALL
-      privileged: false
-      readOnlyRootFilesystem: true
-      runAsGroup: 1337
-      runAsNonRoot: true
-      runAsUser: 1337
-	volumeMounts:
-      - name: envoyconfig
-        mountPath: /etc/envoy/
-`
+	value := &Value{}
+
+	value.Annotations = map[string]string{}
+	value.Labels = map[string]string{}
+	value.ProxyEnv = map[string]string{}
+
+	probes := &Probes{}
+	probes.ReadinessProbe = &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/healthz/ready",
+				Port: intstr.IntOrString{
+					Type:   intstr.Int,
+					IntVal: 15021,
+				},
+				Scheme: corev1.URISchemeHTTP,
+			},
+		},
+		// 3s超时
+		TimeoutSeconds: 3,
+		// 执行周期为1s
+		PeriodSeconds: 15,
+		// 执行成功1次, 我们认为此探针成功
+		SuccessThreshold: 1,
+		// 执行失败4次, 我们认为此探针失败
+		FailureThreshold: 4,
+	}
+	probes.StartupProbe = &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/healthz/ready",
+				Port: intstr.IntOrString{
+					Type:   intstr.Int,
+					IntVal: 15021,
+				},
+				Scheme: corev1.URISchemeHTTP,
+			},
+		},
+		TimeoutSeconds:   3,
+		PeriodSeconds:    1,
+		SuccessThreshold: 1,
+		FailureThreshold: 600,
+	}
+	value.ProxyProbe = probes
+
+	return value
+}
+
+type Probes struct {
+	StartupProbe   *corev1.Probe
+	ReadinessProbe *corev1.Probe
+}
+
+type TemplateData struct {
+}

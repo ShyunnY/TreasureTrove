@@ -12,14 +12,62 @@ import (
 	"testing"
 )
 
+var initPatch = `
+spec:
+  initContainers:
+    - args:
+        - istio-iptables
+        - -p
+        - "15001"
+        - -z
+        - "15006"
+        - -u
+        - "1337"
+        - -m
+        - REDIRECT
+        - -i
+        - '*'
+        - -x
+        - ""
+        - -b
+        - '*'
+        - -d
+        - 15090,15021,15020
+        - --log_output_level=default:info
+      image: docker.io/istio/proxyv2:1.20.1
+      imagePullPolicy: IfNotPresent
+      name: istio-init
+      resources:
+        limits:
+          cpu: "2"
+          memory: 1Gi
+        requests:
+          cpu: 100m
+          memory: 128Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          add:
+            - NET_ADMIN
+            - NET_RAW
+          drop:
+            - ALL
+        privileged: false
+        readOnlyRootFilesystem: false
+        runAsGroup: 0
+        runAsNonRoot: false
+        runAsUser: 0
+`
+
 var testPod = &corev1.Pod{
 	TypeMeta: metav1.TypeMeta{
 		Kind:       "Pod",
 		APIVersion: "v1",
 	},
 	ObjectMeta: metav1.ObjectMeta{
-		Name:   "nginx",
-		Labels: map[string]string{"kubernetes.io/app": "nginx"},
+		Name:        "nginx",
+		Labels:      map[string]string{"kubernetes.io/app": "nginx"},
+		Annotations: map[string]string{},
 	},
 	Spec: corev1.PodSpec{
 		NodeName: "demo-node",
@@ -76,7 +124,7 @@ func TestCheckInject(t *testing.T) {
 		func() *corev1.Pod {
 			ignoreAnPod := testPod.DeepCopy()
 			ignoreAnPod.Annotations = map[string]string{
-				sideacrIgnoreInjectAnnotation: "",
+				sidecarIgnoreInjectAnnotation: "",
 			}
 			return ignoreAnPod
 		}(),
@@ -100,53 +148,6 @@ spec:
       name: nginx
 `
 
-	var initPatch = `
-spec:
-  initContainers:
-    - args:
-        - istio-iptables
-        - -p
-        - "15001"
-        - -z
-        - "15006"
-        - -u
-        - "1337"
-        - -m
-        - REDIRECT
-        - -i
-        - '*'
-        - -x
-        - ""
-        - -b
-        - '*'
-        - -d
-        - 15090,15021,15020
-        - --log_output_level=default:info
-      image: docker.io/istio/proxyv2:1.20.1
-      imagePullPolicy: IfNotPresent
-      name: istio-init
-      resources:
-        limits:
-          cpu: "2"
-          memory: 1Gi
-        requests:
-          cpu: 100m
-          memory: 128Mi
-      securityContext:
-        allowPrivilegeEscalation: false
-        capabilities:
-          add:
-            - NET_ADMIN
-            - NET_RAW
-          drop:
-            - ALL
-        privileged: false
-        readOnlyRootFilesystem: false
-        runAsGroup: 0
-        runAsNonRoot: false
-        runAsUser: 0
-`
-
 	ret := testPod.DeepCopy()
 	var err error
 	var yamls = []struct {
@@ -164,6 +165,7 @@ spec:
 		ret, err = overlayPod(ret, tests.overlayYaml)
 		assert.NoError(t, err)
 		assert.NotNil(t, ret)
+		fmt.Printf("ret: %+v\n", ret)
 	}
 
 }
@@ -171,6 +173,7 @@ spec:
 func TestInjectLogic(t *testing.T) {
 
 	meshPod := testPod.DeepCopy()
+	meshPod.Annotations[sidecarOverwriteAnnotation] = "true"
 	ij := Injector{}
 	areq := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{Namespace: "mesh"},
