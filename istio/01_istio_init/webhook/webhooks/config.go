@@ -1,13 +1,17 @@
 package webhooks
 
 import (
+	"fmt"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/yaml"
+	"log"
 	"text/template"
 )
 
 // Config 自动注入的配置
 // TODO: 后续需要添加watch功能 在k8s ConfigMap中获取
+// todo: 需要配置tag进行反序列化
 type Config struct {
 	InitTemplate    *template.Template
 	SidecarTemplate *template.Template
@@ -28,6 +32,20 @@ func (c *Config) setDefault() {
 		c.ValueConfig = newDefaultValue()
 	}
 
+}
+
+func unmarshalConfig(data []byte) (*Config, error) {
+	var injectConfig Config
+	if err := yaml.Unmarshal(data, &injectConfig); err != nil {
+		log.Println("unmarshal injector config error: ", err)
+
+		return nil, fmt.Errorf("unmarshal injector config error: %v", err)
+	}
+
+	// robustness checking
+	injectConfig.setDefault()
+
+	return &injectConfig, nil
 }
 
 func NewDefaultConfig() *Config {

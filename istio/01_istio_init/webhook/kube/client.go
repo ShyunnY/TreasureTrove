@@ -8,7 +8,7 @@ import (
 	"log"
 )
 
-type client struct {
+type Client struct {
 	url        string
 	kubeconfig string
 	restConfig *rest.Config
@@ -20,7 +20,7 @@ type ClientConfig struct {
 	KubeConfig string
 }
 
-func NewClient(cc ClientConfig) (*client, error) {
+func NewClient(cc ClientConfig) (*Client, error) {
 
 	var url string
 	var configPath string
@@ -34,7 +34,7 @@ func NewClient(cc ClientConfig) (*client, error) {
 		configPath = cc.KubeConfig
 	}
 
-	cli := &client{
+	cli := &Client{
 		url:        url,
 		kubeconfig: configPath,
 	}
@@ -45,7 +45,7 @@ func NewClient(cc ClientConfig) (*client, error) {
 	return cli, nil
 }
 
-func (c *client) conn() error {
+func (c *Client) conn() error {
 
 	cliRestConfig, err := clientcmd.BuildConfigFromFlags(c.url, c.kubeconfig)
 	if err != nil {
@@ -62,6 +62,6 @@ func (c *client) conn() error {
 	return nil
 }
 
-func (c *client) ClientSet() (*kubernetes.Clientset, error) {
+func (c *Client) ClientSet() (*kubernetes.Clientset, error) {
 	return kubernetes.NewForConfig(c.restConfig)
 }

@@ -13,7 +13,8 @@ var (
 )
 
 const (
-	ProxyContainerName = "envoyproxy"
+	ProxyContainerName   = "envoyproxy"
+	InjectorConfigMapKey = "fishnet-injector-config"
 )
 
 const initContainerTemplate = `
