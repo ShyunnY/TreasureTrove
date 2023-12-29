@@ -1,8 +1,29 @@
 package webhooks
 
-import "testing"
+import (
+	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"testing"
+	"webhook/kube"
+)
 
-func TestCm(t *testing.T) {
+func TestCmInformer(t *testing.T) {
 
-	cm()
+	client, err := kube.NewClient(kube.ClientConfig{})
+	assert.NoError(t, err)
+
+	cliset, err := client.ClientSet()
+	assert.NoError(t, err)
+
+	informer := NewConfigMapInformer(
+		cliset,
+		corev1.NamespaceDefault,
+		func(cm *corev1.ConfigMap) {
+			assert.NotNil(t, cm)
+			assert.Equal(t, InjectorConfigMapKey, cm.Name, "configmap not match")
+		},
+	)
+
+	informer.Run(wait.NeverStop)
 }

@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sort"
 	"strconv"
+	"sync"
 )
 
 type InjectorWebhook struct {
@@ -33,6 +34,11 @@ func NewInjectorWebhook() *InjectorWebhook {
 }
 
 type Injector struct {
+	Config *Config
+	mux    sync.RWMutex
+
+	namespace string
+	watcher   Watcher
 }
 
 func NewInjector() *Injector {

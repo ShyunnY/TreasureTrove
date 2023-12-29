@@ -8,8 +8,8 @@ import (
 )
 
 // Watcher
-// TODO: 1. 调用configMap informer进行获取cm
-// TODO: 2. 将配置设置进config中
+// 调用configMap informer进行获取cm
+// 通过回调函数, 当配置更新后, 将新配置传入回调函数中
 type Watcher interface {
 	SetCallback(func(*Config) error)
 
@@ -19,13 +19,16 @@ type Watcher interface {
 type ConfigMapCallback func(*corev1.ConfigMap)
 
 type ConfigMapWatcher struct {
-	callbacks ConfigMapCallback
-	handler   func(*Config) error
-	name      string
-	namespace string
-	configKey string
+	callbacks         ConfigMapCallback
+	handler           func(*Config) error
+	name              string
+	namespace         string
+	configKey         string
+	configMapInformer *ConfigMapInformer
 }
 
+// SetCallback
+// 必须要在Run(stop <-chan struct{})启动之前设置handler
 func (c *ConfigMapWatcher) SetCallback(handler func(*Config) error) {
 	c.handler = handler
 }
@@ -38,10 +41,11 @@ func NewConfigMapWatch(client *kubernetes.Clientset, name, namespace, configKey 
 		configKey: configKey,
 	}
 
-	NewConfigMapInformer(client, namespace, func(configMap *corev1.ConfigMap) {
+	w.configMapInformer = NewConfigMapInformer(client, namespace, func(configMap *corev1.ConfigMap) {
 
 		fishnetConfig, err := readConfigMap(configMap, configKey)
 		if err != nil {
+			log.Println("error: ", err)
 			// TODO: 我们需要使用默认值??
 		}
 
@@ -59,8 +63,8 @@ func NewConfigMapWatch(client *kubernetes.Clientset, name, namespace, configKey 
 func readConfigMap(configMap *corev1.ConfigMap, configKey string) (*Config, error) {
 
 	// 1.读取configMap中配置
-	config, exsit := configMap.Data[configKey]
-	if !exsit {
+	config, exist := configMap.Data[configKey]
+	if !exist {
 		return nil, fmt.Errorf("configmap not found data, key: %s", configKey)
 	}
 
@@ -74,4 +78,7 @@ func readConfigMap(configMap *corev1.ConfigMap, configKey string) (*Config, erro
 
 func (c *ConfigMapWatcher) Run(stop <-chan struct{}) {
 
+	c.configMapInformer.Run(stop)
+
+	log.Println("configmap watcher closed")
 }

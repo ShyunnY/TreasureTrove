@@ -10,12 +10,10 @@ import (
 )
 
 // Config 自动注入的配置
-// TODO: 后续需要添加watch功能 在k8s ConfigMap中获取
-// todo: 需要配置tag进行反序列化
 type Config struct {
-	InitTemplate    *template.Template
-	SidecarTemplate *template.Template
-	ValueConfig     *Value
+	InitTemplate    *template.Template `json:"initTemplate" yaml:"initTemplate"`
+	SidecarTemplate *template.Template `json:"sidecarTemplate" yaml:"sidecarTemplate"`
+	ValueConfig     *Value             `json:"valueConfig" yaml:"valueConfig"`
 }
 
 func (c *Config) setDefault() {
@@ -28,9 +26,7 @@ func (c *Config) setDefault() {
 		c.SidecarTemplate = template.Must(template.New("sidecar-containers").Parse(sidecarContainerTemplate))
 	}
 
-	if c.ValueConfig == nil {
-		c.ValueConfig = newDefaultValue()
-	}
+	newDefaultValue(c.ValueConfig)
 
 }
 
@@ -58,24 +54,37 @@ func NewDefaultConfig() *Config {
 
 type Value struct {
 	// sidecar proxy env
-	ProxyEnv map[string]string
+	ProxyEnv map[string]string `json:"proxyEnv,omitempty" yaml:"proxyEnv"`
 	// injector extra annotations
-	Annotations map[string]string
+	Annotations map[string]string `json:"annotations,omitempty" yaml:"annotations"`
 	// injector extra labels
-	Labels map[string]string
+	Labels map[string]string `json:"labels,omitempty" yaml:"labels"`
 	// sidecar proxy probe
-	ProxyProbe *Probes
+	ProxyProbe *Probes `json:"proxyProbe,omitempty" yaml:"proxyProbe"`
+
+	injectProbe *bool
 }
 
-func newDefaultValue() *Value {
+func newDefaultValue(origin *Value) *Value {
 
-	value := &Value{}
+	if origin.Labels == nil {
+		origin.Labels = map[string]string{}
+	}
 
-	value.Annotations = map[string]string{}
-	value.Labels = map[string]string{}
-	value.ProxyEnv = map[string]string{}
+	if origin.Annotations == nil {
+		origin.Annotations = map[string]string{}
+	}
 
-	probes := &Probes{}
+	if origin.ProxyEnv == nil {
+		origin.ProxyEnv = map[string]string{}
+	}
+
+	// 如果没有明确将injectProbe设置为false, 我们都注入探针
+	if origin.injectProbe != nil && *origin.injectProbe == false {
+		return origin
+	}
+
+	probes := Probes{}
 	probes.ReadinessProbe = &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
@@ -112,14 +121,27 @@ func newDefaultValue() *Value {
 		SuccessThreshold: 1,
 		FailureThreshold: 600,
 	}
-	value.ProxyProbe = probes
 
-	return value
+	if origin.ProxyProbe == nil {
+		origin.ProxyProbe = &probes
+	} else {
+
+		if origin.ProxyProbe.ReadinessProbe == nil {
+			origin.ProxyProbe.ReadinessProbe = probes.ReadinessProbe
+		}
+
+		if origin.ProxyProbe.StartupProbe == nil {
+			origin.ProxyProbe.StartupProbe = probes.StartupProbe
+		}
+
+	}
+
+	return origin
 }
 
 type Probes struct {
-	StartupProbe   *corev1.Probe
-	ReadinessProbe *corev1.Probe
+	StartupProbe   *corev1.Probe `json:"startupProbe,omitempty" yaml:"startupProbe"`
+	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty" yaml:"readinessProbe"`
 }
 
 type TemplateData struct {
