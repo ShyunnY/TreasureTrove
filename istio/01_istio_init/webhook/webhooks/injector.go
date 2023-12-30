@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"gomodules.xyz/jsonpatch/v2"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/mergepatch"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/kubernetes"
 	"log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sort"
 	"strconv"
 	"sync"
+	"webhook/kube"
 )
 
 type InjectorWebhook struct {
@@ -23,7 +26,11 @@ type InjectorWebhook struct {
 
 func NewInjectorWebhook() *InjectorWebhook {
 	injectWh := &InjectorWebhook{}
-	injector := NewInjector()
+
+	client, _ := kube.NewClient(kube.ClientConfig{})
+	cliset, _ := client.ClientSet()
+
+	injector := NewInjector(cliset, corev1.NamespaceAll, "inject_config")
 
 	wh := &webhook.Admission{
 		Handler: injector,
@@ -35,14 +42,63 @@ func NewInjectorWebhook() *InjectorWebhook {
 
 type Injector struct {
 	Config *Config
-	mux    sync.RWMutex
+	mux    *sync.RWMutex
+
+	cliset *kubernetes.Clientset
 
 	namespace string
+	configKey string
+	once      *sync.Once
 	watcher   Watcher
 }
 
-func NewInjector() *Injector {
-	return &Injector{}
+func NewInjector(cliset *kubernetes.Clientset, namespace, configKey string) *Injector {
+
+	injector := &Injector{
+		cliset:    cliset,
+		namespace: namespace,
+		configKey: configKey,
+		mux:       &sync.RWMutex{},
+		once:      &sync.Once{},
+	}
+
+	// 初始化watcher
+	injector.initWatcher(context.TODO())
+
+	return injector
+}
+
+func (ij *Injector) initWatcher(ctx context.Context) {
+
+	// 注册watcher handler
+	// 我们注册一个获取配置的回调函数
+	// 当ConfigMap更新的时候, 我们希望同时更新Webhook的Injector配置
+	watcher := NewConfigMapWatch(ij.cliset, "configmap-watcher", ij.namespace, ij.configKey)
+	watcher.SetCallback(ij.updateConfig)
+	ij.watcher = watcher
+
+	// 在初始化的时候, 我们阻塞的获取ConfigMap中的配置
+	ij.once.Do(func() {
+		var err error
+		var config *Config
+		if config, err = ij.watcher.Get(); err != nil {
+			log.Println("error: ", err)
+
+			if errors.IsNotFound(err) {
+				ij.updateConfig(NewDefaultConfig())
+			} else {
+				panic(err)
+			}
+
+		} else if err = ij.updateConfig(config); err != nil {
+
+			log.Println("error: ", err)
+		}
+	})
+
+	go func() {
+		watcher.Run(ctx.Done())
+	}()
 }
 
 func (ij *Injector) Handle(ctx context.Context, req admission.Request) admission.Response {
@@ -55,7 +111,6 @@ func (ij *Injector) Handle(ctx context.Context, req admission.Request) admission
 		return admission.Denied("unable deserialize pod")
 	}
 
-	log.Println("receiver pod")
 	return ij.injectLogic(pod, req)
 }
 
@@ -69,17 +124,13 @@ func (ij *Injector) injectLogic(originPod *corev1.Pod, req admission.Request) ad
 		return webhook.Allowed("")
 	}
 
-	// 2.获取配置, 还未做, 目前先用静态配置
-	// TODO: 实际上, 我们也许要通过K8s的ConfigMap获取sidecar模板, 这可以让我们进行动态获取配置.
-	config := NewDefaultConfig()
-
-	// 3. 运行模板
-	mergePod, err := runTemplate(originPod, config)
+	// 渲染自动注入模板
+	mergePod, err := runTemplate(originPod, ij.getConfig())
 	if err != nil {
 		return admission.Allowed("")
 	}
 
-	if err := postProcessPod(mergePod, config); err != nil {
+	if err := postProcessPod(mergePod, ij.getConfig()); err != nil {
 		return admission.Allowed("")
 	}
 
@@ -91,6 +142,7 @@ func (ij *Injector) injectLogic(originPod *corev1.Pod, req admission.Request) ad
 		return admission.Allowed("")
 	}
 
+	log.Println("mergePod metadata labels: ", mergePod.Labels)
 	// TODO: 对容器进行重排序
 	return admission.Patched("inject success", patch...)
 }
@@ -172,6 +224,23 @@ func applyMetadata(pod *corev1.Pod, config *Config) {
 	}
 
 	//TODO set status metadata
+}
+
+func (ij *Injector) updateConfig(injectConfig *Config) error {
+	log.Println("update a new inject config")
+	ij.mux.Lock()
+	defer ij.mux.Unlock()
+
+	ij.Config = injectConfig
+
+	return nil
+}
+
+func (ij *Injector) getConfig() *Config {
+	ij.mux.RLock()
+	defer ij.mux.RUnlock()
+
+	return ij.Config
 }
 
 // 将外部envs设置到给定的容器上

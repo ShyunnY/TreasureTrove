@@ -47,10 +47,14 @@ func NewConfigMapInformer(client *kubernetes.Clientset, namespace string, callba
 			AddFunc: func(obj interface{}) {
 				// filter已经帮我们进行过滤了, 所以我们直接转换成configmap
 				cm := obj.(*corev1.ConfigMap)
+
+				log.Println("watcher a new configmap: ", cm.Name)
 				callbacks(cm)
 			},
 			UpdateFunc: func(_, obj interface{}) {
 				cm := obj.(*corev1.ConfigMap)
+
+				log.Println("watcher a update configmap: ", cm.Name)
 				callbacks(cm)
 			},
 

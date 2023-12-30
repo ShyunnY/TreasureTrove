@@ -26,7 +26,7 @@ func (c *Config) setDefault() {
 		c.SidecarTemplate = template.Must(template.New("sidecar-containers").Parse(sidecarContainerTemplate))
 	}
 
-	newDefaultValue(c.ValueConfig)
+	c.ValueConfig = newDefaultValue(c.ValueConfig)
 
 }
 
@@ -62,10 +62,14 @@ type Value struct {
 	// sidecar proxy probe
 	ProxyProbe *Probes `json:"proxyProbe,omitempty" yaml:"proxyProbe"`
 
-	injectProbe *bool
+	InjectProbe *bool `json:"injectProbe" yaml:"injectProbe"`
 }
 
 func newDefaultValue(origin *Value) *Value {
+
+	if origin == nil {
+		origin = &Value{}
+	}
 
 	if origin.Labels == nil {
 		origin.Labels = map[string]string{}
@@ -80,7 +84,7 @@ func newDefaultValue(origin *Value) *Value {
 	}
 
 	// 如果没有明确将injectProbe设置为false, 我们都注入探针
-	if origin.injectProbe != nil && *origin.injectProbe == false {
+	if origin.InjectProbe != nil && *origin.InjectProbe == false {
 		return origin
 	}
 

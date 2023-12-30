@@ -46,6 +46,7 @@ metadata:
 data: 
   inject_config: |
     valueConfig:
+      injectProbe: false
       labels:
         abc: efg
 `

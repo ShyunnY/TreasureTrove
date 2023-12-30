@@ -1,6 +1,7 @@
 package webhooks
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/stretchr/testify/assert"
@@ -8,8 +9,11 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"testing"
+	"time"
+	"webhook/kube"
 )
 
 var initPatch = `
@@ -181,4 +185,65 @@ func TestInjectLogic(t *testing.T) {
 
 	ij.injectLogic(meshPod, areq)
 
+}
+
+func TestWebhookHandler(t *testing.T) {
+
+	client, err := kube.NewClient(kube.ClientConfig{})
+	assert.NoError(t, err)
+
+	cliset, err := client.ClientSet()
+	assert.NoError(t, err)
+
+	meshPod := testPod.DeepCopy()
+	raw, err := json.Marshal(meshPod)
+	assert.NoError(t, err)
+
+	areq := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			Namespace: "default",
+			Object: runtime.RawExtension{
+				Raw: raw,
+			},
+		},
+	}
+
+	injector := NewInjector(cliset, corev1.NamespaceDefault, "inject_config")
+
+	resp := injector.Handle(context.TODO(), areq)
+	assert.NotEmpty(t, resp.Patches)
+
+}
+
+func TestInjectorConfigUpdate(t *testing.T) {
+
+	client, err := kube.NewClient(kube.ClientConfig{})
+	assert.NoError(t, err)
+
+	cliset, err := client.ClientSet()
+	assert.NoError(t, err)
+
+	meshPod := testPod.DeepCopy()
+	raw, err := json.Marshal(meshPod)
+	assert.NoError(t, err)
+
+	areq := admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			Namespace: "default",
+			Object: runtime.RawExtension{
+				Raw: raw,
+			},
+		},
+	}
+
+	injector := NewInjector(cliset, corev1.NamespaceDefault, "inject_config")
+
+	resp := injector.Handle(context.TODO(), areq)
+
+	assert.NotEmpty(t, resp.Patches)
+
+	time.Sleep(time.Second * 10)
+
+	resp = injector.Handle(context.TODO(), areq)
+	assert.NotEmpty(t, resp.Patches)
 }

@@ -1,8 +1,12 @@
 package webhooks
 
 import (
+	"context"
 	"fmt"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"log"
 )
@@ -14,6 +18,8 @@ type Watcher interface {
 	SetCallback(func(*Config) error)
 
 	Run(stop <-chan struct{})
+
+	Get() (*Config, error)
 }
 
 type ConfigMapCallback func(*corev1.ConfigMap)
@@ -25,6 +31,8 @@ type ConfigMapWatcher struct {
 	namespace         string
 	configKey         string
 	configMapInformer *ConfigMapInformer
+
+	cliset *kubernetes.Clientset
 }
 
 // SetCallback
@@ -39,6 +47,7 @@ func NewConfigMapWatch(client *kubernetes.Clientset, name, namespace, configKey 
 		name:      name,
 		namespace: namespace,
 		configKey: configKey,
+		cliset:    client,
 	}
 
 	w.configMapInformer = NewConfigMapInformer(client, namespace, func(configMap *corev1.ConfigMap) {
@@ -60,6 +69,34 @@ func NewConfigMapWatch(client *kubernetes.Clientset, name, namespace, configKey 
 	return w
 }
 
+func (c *ConfigMapWatcher) Get() (*Config, error) {
+
+	configMap, err := c.cliset.
+		CoreV1().
+		ConfigMaps(c.namespace).
+		Get(context.TODO(), InjectorConfigMapKey, metav1.GetOptions{})
+
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, errors.NewNotFound(
+				schema.ParseGroupResource("configmaps"),
+				InjectorConfigMapKey,
+			)
+		} else {
+			return nil, err
+		}
+	}
+
+	return readConfigMap(configMap, c.configKey)
+}
+
+func (c *ConfigMapWatcher) Run(stop <-chan struct{}) {
+	log.Println("configmap watcher start")
+	c.configMapInformer.Run(stop)
+
+	log.Println("configmap watcher closed")
+}
+
 func readConfigMap(configMap *corev1.ConfigMap, configKey string) (*Config, error) {
 
 	// 1.读取configMap中配置
@@ -74,11 +111,4 @@ func readConfigMap(configMap *corev1.ConfigMap, configKey string) (*Config, erro
 		return nil, err
 	}
 	return injectConfig, nil
-}
-
-func (c *ConfigMapWatcher) Run(stop <-chan struct{}) {
-
-	c.configMapInformer.Run(stop)
-
-	log.Println("configmap watcher closed")
 }
