@@ -1,9 +1,10 @@
-module webhook
+module fishnet-inject
 
 go 1.21
 
 require (
 	github.com/stretchr/testify v1.8.4
+	go.uber.org/zap v1.26.0
 	gomodules.xyz/jsonpatch/v2 v2.4.0
 	k8s.io/api v0.29.0
 	k8s.io/apimachinery v0.29.0
@@ -42,6 +43,7 @@ require (
 	github.com/prometheus/common v0.45.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
+	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/exp v0.0.0-20231219180239-dc181d75b848 // indirect
 	golang.org/x/net v0.19.0 // indirect
 	golang.org/x/oauth2 v0.15.0 // indirect

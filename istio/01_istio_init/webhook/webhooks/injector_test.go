@@ -3,6 +3,7 @@ package webhooks
 import (
 	"context"
 	"encoding/json"
+	"fishnet-inject/kube"
 	"fmt"
 	"github.com/stretchr/testify/assert"
 	"gomodules.xyz/jsonpatch/v2"
@@ -13,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"testing"
 	"time"
-	"webhook/kube"
 )
 
 var initPatch = `
@@ -246,4 +246,18 @@ func TestInjectorConfigUpdate(t *testing.T) {
 
 	resp = injector.Handle(context.TODO(), areq)
 	assert.NotEmpty(t, resp.Patches)
+}
+
+func TestReorderContainer(t *testing.T) {
+
+	meshPod := testPod.DeepCopy()
+	meshPod.Spec.Containers = append(meshPod.Spec.Containers, corev1.Container{Name: ProxyContainerName})
+
+	config := NewDefaultConfig()
+	reorderContainer(meshPod, config)
+	assert.Equal(t, ProxyContainerName, meshPod.Spec.Containers[1].Name)
+
+	config.ValueConfig.AfterProxyStart = true
+	reorderContainer(meshPod, config)
+	assert.Equal(t, ProxyContainerName, meshPod.Spec.Containers[0].Name)
 }

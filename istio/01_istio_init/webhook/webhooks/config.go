@@ -14,6 +14,10 @@ type Config struct {
 	InitTemplate    *template.Template `json:"initTemplate" yaml:"initTemplate"`
 	SidecarTemplate *template.Template `json:"sidecarTemplate" yaml:"sidecarTemplate"`
 	ValueConfig     *Value             `json:"valueConfig" yaml:"valueConfig"`
+
+	// TODO: 目前我们使用字符串代替, 将来会使用go-control-plane的Envoy proto
+	// TODO: base config我认为将直接存放在envoy中
+	ProxyConfig *string `json:"proxyConfig" yaml:"proxyConfig"`
 }
 
 func (c *Config) setDefault() {
@@ -24,6 +28,11 @@ func (c *Config) setDefault() {
 
 	if c.SidecarTemplate == nil {
 		c.SidecarTemplate = template.Must(template.New("sidecar-containers").Parse(sidecarContainerTemplate))
+	}
+
+	// 不设置proxyConfig, 或者将ProxyConfig显式设置为空
+	if c.ProxyConfig == nil || *c.ProxyConfig == "" {
+		// TODO: 将来会使用xds时候, 我们会进行自动注入配置
 	}
 
 	c.ValueConfig = newDefaultValue(c.ValueConfig)
@@ -63,6 +72,10 @@ type Value struct {
 	ProxyProbe *Probes `json:"proxyProbe,omitempty" yaml:"proxyProbe"`
 
 	InjectProbe *bool `json:"injectProbe" yaml:"injectProbe"`
+
+	// whether to wait for the proxy to start before starting the application;
+	// defaults to false
+	AfterProxyStart bool `yaml:"afterProxyStart" yaml:"afterProxyStart"`
 }
 
 func newDefaultValue(origin *Value) *Value {
@@ -82,7 +95,6 @@ func newDefaultValue(origin *Value) *Value {
 	if origin.ProxyEnv == nil {
 		origin.ProxyEnv = map[string]string{}
 	}
-
 	// 如果没有明确将injectProbe设置为false, 我们都注入探针
 	if origin.InjectProbe != nil && *origin.InjectProbe == false {
 		return origin

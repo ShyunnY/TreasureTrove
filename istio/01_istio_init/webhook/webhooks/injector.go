@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fishnet-inject/kube"
+	"fishnet-inject/sugar"
 	"gomodules.xyz/jsonpatch/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -17,7 +19,6 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"webhook/kube"
 )
 
 type InjectorWebhook struct {
@@ -40,6 +41,8 @@ func NewInjectorWebhook() *InjectorWebhook {
 	return injectWh
 }
 
+// Injector
+// TODO: 我们需要确保幂等性
 type Injector struct {
 	Config *Config
 	mux    *sync.RWMutex
@@ -116,26 +119,26 @@ func (ij *Injector) Handle(ctx context.Context, req admission.Request) admission
 
 func (ij *Injector) injectLogic(originPod *corev1.Pod, req admission.Request) admission.Response {
 
-	// 潜在字段处理
+	// potential check
 	potentialCheck(originPod, req)
 
-	// 检查是否应该注入pod
+	// check if the pod should be injected
 	if !checkInject(originPod) {
 		return webhook.Allowed("")
 	}
 
-	// 渲染自动注入模板
+	// render template
 	mergePod, err := runTemplate(originPod, ij.getConfig())
 	if err != nil {
 		return admission.Allowed("")
 	}
 
+	// post process pod handler
 	if err := postProcessPod(mergePod, ij.getConfig()); err != nil {
 		return admission.Allowed("")
 	}
 
-	// 5. 构建patch
-	// 使用增量pod与源pod构建patch
+	// build patch for delta pod and origin pod
 	patch, err := createJSONPatch(originPod, mergePod)
 	if err != nil {
 
@@ -143,7 +146,7 @@ func (ij *Injector) injectLogic(originPod *corev1.Pod, req admission.Request) ad
 	}
 
 	log.Println("mergePod metadata labels: ", mergePod.Labels)
-	// TODO: 对容器进行重排序
+
 	return admission.Patched("inject success", patch...)
 }
 
@@ -168,11 +171,52 @@ func postProcessPod(mergePod *corev1.Pod, config *Config) error {
 
 	// 2. TODO: 设置Prometheus配置
 
-	// 3. 设置Probe
+	// 设置Probe
 	overwriteProbe(mergePod, config)
 
-	// 4. 设置其余元数据
+	// 设置其余元数据
 	applyMetadata(mergePod, config)
+
+	// 重排容器顺序
+	if err := reorderContainer(mergePod, config); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// 对containers进行重排序
+// 后续也许需要对initContainers进行重排序
+func reorderContainer(pod *corev1.Pod, config *Config) error {
+
+	proxyLocation := moveLast
+
+	if config.ValueConfig.AfterProxyStart {
+		sugar.Info("proxy container start before application")
+		proxyLocation = moveFirst
+	}
+
+	containers := []corev1.Container{}
+	var proxy *corev1.Container
+	for _, c := range pod.Spec.Containers {
+		if c.Name != ProxyContainerName {
+			containers = append(containers, c)
+		} else {
+			proxy = &c
+		}
+	}
+
+	if proxy == nil {
+		return nil
+	}
+
+	switch proxyLocation {
+	case moveFirst:
+		containers = append([]corev1.Container{*proxy}, containers...)
+	case moveLast:
+		containers = append(containers, *proxy)
+	}
+	pod.Spec.Containers = containers
 
 	return nil
 }

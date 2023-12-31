@@ -1,12 +1,12 @@
 package webhooks
 
 import (
+	"fishnet-inject/kube"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"testing"
-	"webhook/kube"
 )
 
 func TestWatcherRun(t *testing.T) {

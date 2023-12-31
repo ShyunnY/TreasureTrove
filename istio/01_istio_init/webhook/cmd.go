@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
+	"fishnet-inject/webhooks"
 	"log"
-	"webhook/webhooks"
 )
 
-// This is an example webhook
 func main() {
 
+	// 初始化WebhookServer
 	sre := webhooks.NewWebhookServer()
 
 	log.Println("fishnet injector webhook running on 9527")

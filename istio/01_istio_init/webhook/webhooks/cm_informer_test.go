@@ -1,11 +1,11 @@
 package webhooks
 
 import (
+	"fishnet-inject/kube"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"testing"
-	"webhook/kube"
 )
 
 func TestCmInformer(t *testing.T) {
