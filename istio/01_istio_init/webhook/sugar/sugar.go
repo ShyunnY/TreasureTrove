@@ -13,7 +13,7 @@ const (
 	consoleEncoding = "console"
 )
 
-func init() {
+func InitLogger() {
 
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.EncodeTime = zapcore.RFC3339TimeEncoder

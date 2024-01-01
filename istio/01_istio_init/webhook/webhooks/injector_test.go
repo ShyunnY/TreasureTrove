@@ -261,3 +261,84 @@ func TestReorderContainer(t *testing.T) {
 	reorderContainer(meshPod, config)
 	assert.Equal(t, ProxyContainerName, meshPod.Spec.Containers[0].Name)
 }
+
+func TestRunTemplate(t *testing.T) {
+
+	const initTemplate = `
+spec:
+  initContainers:
+  - name: fishnet-init
+    resources:
+      requests:
+        memory: "100Mi"
+      limits:
+        memory: "200Mi"
+  containers:
+  - name: envoyproxy
+    resources:
+      requests:
+        memory: "200Mi"
+      limits:
+        memory: "1Gi"
+`
+
+	tests := []struct {
+		pod                        *corev1.Pod
+		config                     *Config
+		expectInitRequestMemory    string
+		expectInitLimitMemory      string
+		expectSidecarRequestMemory string
+		expectSidecarLimitMemory   string
+	}{
+		{
+			pod: func() *corev1.Pod {
+				originPod := testPod.DeepCopy()
+				return originPod
+			}(),
+			config:                     NewDefaultConfig(),
+			expectInitRequestMemory:    "128Mi",
+			expectInitLimitMemory:      "1Gi",
+			expectSidecarRequestMemory: "0",
+			expectSidecarLimitMemory:   "0",
+		},
+		{
+			pod: func() *corev1.Pod {
+				originPod := testPod.DeepCopy()
+				originPod.Annotations[customTemplateAnnotation] = initTemplate
+				return originPod
+			}(),
+			config:                     NewDefaultConfig(),
+			expectInitRequestMemory:    "100Mi",
+			expectInitLimitMemory:      "200Mi",
+			expectSidecarRequestMemory: "200Mi",
+			expectSidecarLimitMemory:   "1Gi",
+		},
+		{
+			pod: func() *corev1.Pod {
+				originPod := testPod.DeepCopy()
+				return originPod
+			}(),
+			config: func() *Config {
+				config := NewDefaultConfig()
+				config.ValueConfig.CustomTemplate = initTemplate
+				return config
+			}(),
+			expectInitRequestMemory:    "100Mi",
+			expectInitLimitMemory:      "200Mi",
+			expectSidecarRequestMemory: "200Mi",
+			expectSidecarLimitMemory:   "1Gi",
+		},
+	}
+
+	for _, p := range tests {
+		retPod, err := runTemplate(p.pod, p.config)
+		assert.Equal(t, p.expectInitRequestMemory, retPod.Spec.InitContainers[0].Resources.Requests.Memory().String())
+		assert.Equal(t, p.expectInitLimitMemory, retPod.Spec.InitContainers[0].Resources.Limits.Memory().String())
+
+		assert.Equal(t, p.expectSidecarRequestMemory, retPod.Spec.Containers[0].Resources.Requests.Memory().String())
+		assert.Equal(t, p.expectSidecarLimitMemory, retPod.Spec.Containers[0].Resources.Limits.Memory().String())
+		assert.NotNil(t, retPod)
+		assert.NoError(t, err)
+	}
+
+}

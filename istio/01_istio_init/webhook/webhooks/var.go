@@ -6,10 +6,12 @@ var IgonreNamespace = []string{
 	"kube-node-lease",
 }
 
+// injector common annotation
 var (
 	sidecarInjectAnnotation       = "sidecar.fishnet.io/inject"
 	sidecarIgnoreInjectAnnotation = "sidecar.fishnet.io/ignore"
 	sidecarOverwriteAnnotation    = "sidecar.fishnet.io/overwrite.probe"
+	customTemplateAnnotation      = "inject.fishnet.io/template"
 )
 
 const (
@@ -50,7 +52,7 @@ spec:
         - --log_output_level=default:info
       image: docker.io/istio/proxyv2:1.20.1
       imagePullPolicy: IfNotPresent
-      name: istio-init
+      name: fishnet-init
       resources:
         limits:
           cpu: "2"

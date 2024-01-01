@@ -73,6 +73,8 @@ type Value struct {
 	// explicitly set to false turns off probe injection, default turn on probe injection
 	InjectProbe *bool `json:"injectProbe" yaml:"injectProbe"`
 
+	CustomTemplate string `json:"customTemplate" yaml:"customTemplate"`
+
 	// whether to wait for the proxy to start before starting the application;
 	// defaults to false
 	AfterProxyStart bool `yaml:"afterProxyStart" yaml:"afterProxyStart"`

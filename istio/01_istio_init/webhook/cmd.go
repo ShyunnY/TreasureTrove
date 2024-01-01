@@ -4,10 +4,16 @@ import (
 	"context"
 	"fishnet-inject/sugar"
 	"fishnet-inject/webhooks"
+	"github.com/go-logr/logr"
 	"os"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func main() {
+
+	// init sugar logger
+	sugar.InitLogger()
+	log.SetLogger(logr.New(&sugar.Sink{})) // TODO: 我们需要实现一个controller-runtime log sink
 
 	// 初始化WebhookServer
 	sre := webhooks.NewWebhookServer()

@@ -287,10 +287,9 @@ func (ij *Injector) getConfig() *Config {
 // 将外部envs设置到给定的容器上
 // 如果容器中env与外部env有同名env, 则外部的env将会覆盖容器中已存在的env
 // example:
-//
-//		 container1.env: a,b,c,d
-//		 newEnvs: b,f
-//	  result: containers.env: a,b(newEnvs),c,d
+// container1.env: a,b,c,d
+// newEnvs: b,f
+// result: containers.env: a,b(newEnvs),c,d
 func setContainerEnv(container *corev1.Container, newEnvs map[string]string) {
 
 	envVars := make([]corev1.EnvVar, 0)
@@ -349,27 +348,37 @@ func runTemplate(originalPod *corev1.Pod, config *Config) (*corev1.Pod, error) {
 	templatePod := &corev1.Pod{}
 	copyOriginPod := originalPod.DeepCopy()
 
-	// TODO: 渲染data将从config中获取
+	// TODO: 我们从Config中获取渲染模板数据的数据
 	data := TemplateData{}
 
-	// init模板渲染
-	// TODO: 如果用户指定了initTemplate, 我们将保留(也许在spec.initContainer中声明部分/整体,也许在annotation中声明)
+	// run render init template
 	var initBuf bytes.Buffer
 	if err := config.InitTemplate.Execute(&initBuf, &data); err != nil {
-		log.Println("exec template error: ", err.Error())
+		sugar.Error("init template execute error: ", err)
+		return nil, err
 	}
 
-	templatePod, _ = overlayPod(templatePod, initBuf.Bytes())
+	var mergeErr error
+	if templatePod, mergeErr = overlayPod(templatePod, initBuf.Bytes()); mergeErr != nil {
+		sugar.Error("injector merge init template error: ", mergeErr)
+	}
 
-	// sidecar模板渲染
-	// TODO: 如果用户指定了sidecarTemplate, 我们将保留(也许在spec.Containers中声明部分/整体,也许在annotation中声明)
+	// run render sidecar template
 	var sidecarBuf bytes.Buffer
 	if err := config.SidecarTemplate.Execute(&sidecarBuf, &data); err != nil {
-		log.Println("exec template error: ", err.Error())
+		sugar.Error("sidecar template execute error: ", err)
+		return nil, err
 	}
-	templatePod, _ = overlayPod(templatePod, sidecarBuf.Bytes())
+	if templatePod, mergeErr = overlayPod(templatePod, sidecarBuf.Bytes()); mergeErr != nil {
+		sugar.Error("injector merge sidecar template error: ", mergeErr)
+	}
 
-	// TODO:
+	templatePod, mergeErr = mergeCustomTemplate(templatePod, originalPod, config)
+	if mergeErr != nil {
+		sugar.Error("injector merge custom template error: ", mergeErr)
+
+		return nil, mergeErr
+	}
 
 	templateBytes, err := json.Marshal(templatePod)
 	if err != nil {
@@ -379,10 +388,36 @@ func runTemplate(originalPod *corev1.Pod, config *Config) (*corev1.Pod, error) {
 	// 将模板pod合并到originalPod上
 	retPod, err := overlayPod(copyOriginPod, templateBytes)
 	if err != nil {
+		sugar.Error("apply overlay template error: ", err)
 		return nil, err
 	}
 
 	return retPod, nil
+}
+
+func mergeCustomTemplate(templatePod *corev1.Pod, originalPod *corev1.Pod, config *Config) (*corev1.Pod, error) {
+
+	// 如果config和annotation都存在custom template, 那么以annotation为主
+	merge := false
+	var templateRaw []byte
+
+	if config.ValueConfig.CustomTemplate != "" {
+		merge = true
+		templateRaw = []byte(config.ValueConfig.CustomTemplate)
+	}
+
+	for k, v := range originalPod.Annotations {
+		if k == customTemplateAnnotation {
+			merge = true
+			templateRaw = []byte(v)
+		}
+	}
+
+	if !merge {
+		return templatePod, nil
+	}
+
+	return overlayPod(templatePod, templateRaw)
 }
 
 func potentialCheck(pod *corev1.Pod, req admission.Request) {
