@@ -1,11 +1,11 @@
 package webhooks
 
 import (
+	"fishnet-inject/sugar"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
-	"log"
 	"time"
 )
 
@@ -19,11 +19,14 @@ var (
 // delete, 重建上一次的配置
 type ConfigMapInformer struct {
 	informer cache.SharedIndexInformer
+	name     string
 }
 
 func NewConfigMapInformer(client *kubernetes.Clientset, namespace string, callbacks func(*corev1.ConfigMap)) *ConfigMapInformer {
 
-	ci := &ConfigMapInformer{}
+	ci := &ConfigMapInformer{
+		name: "configmap-informer",
+	}
 
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		client,
@@ -35,11 +38,13 @@ func NewConfigMapInformer(client *kubernetes.Clientset, namespace string, callba
 		FilterFunc: func(obj interface{}) bool {
 			// 我们仅对指定configMap感兴趣
 			if cm, ok := obj.(*corev1.ConfigMap); !ok {
-				log.Println("this is no configmap!")
+				sugar.Warn("watch a resource that is not a configmap")
+
 				return false
 			} else if cm.Name != InjectorConfigMapKey {
 				return false
 			}
+
 			return true
 		},
 		Handler: cache.ResourceEventHandlerFuncs{
@@ -48,13 +53,13 @@ func NewConfigMapInformer(client *kubernetes.Clientset, namespace string, callba
 				// filter已经帮我们进行过滤了, 所以我们直接转换成configmap
 				cm := obj.(*corev1.ConfigMap)
 
-				log.Println("watcher a new configmap: ", cm.Name)
+				sugar.Debugf("%s get a add %s configmap", ci.name, cm.Name)
 				callbacks(cm)
 			},
 			UpdateFunc: func(_, obj interface{}) {
 				cm := obj.(*corev1.ConfigMap)
 
-				log.Println("watcher a update configmap: ", cm.Name)
+				sugar.Debugf("%s get a update %s configmap", ci.name, cm.Name)
 				callbacks(cm)
 			},
 
@@ -71,7 +76,7 @@ func NewConfigMapInformer(client *kubernetes.Clientset, namespace string, callba
 func (cmi *ConfigMapInformer) Run(stop <-chan struct{}) {
 	// 使用空struct作为占位符, 内存仅为1byte
 
-	log.Println("configmapInformer start watch configmap")
+	sugar.Infof("%s component running", cmi.name)
 	cmi.informer.Run(stop)
 
 }

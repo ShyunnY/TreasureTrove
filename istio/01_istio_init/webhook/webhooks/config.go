@@ -70,7 +70,7 @@ type Value struct {
 	Labels map[string]string `json:"labels,omitempty" yaml:"labels"`
 	// sidecar proxy probe
 	ProxyProbe *Probes `json:"proxyProbe,omitempty" yaml:"proxyProbe"`
-
+	// explicitly set to false turns off probe injection, default turn on probe injection
 	InjectProbe *bool `json:"injectProbe" yaml:"injectProbe"`
 
 	// whether to wait for the proxy to start before starting the application;

@@ -8,7 +8,6 @@ import (
 	"fishnet-inject/sugar"
 	"gomodules.xyz/jsonpatch/v2"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/mergepatch"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/yaml"
@@ -31,7 +30,8 @@ func NewInjectorWebhook() *InjectorWebhook {
 	client, _ := kube.NewClient(kube.ClientConfig{})
 	cliset, _ := client.ClientSet()
 
-	injector := NewInjector(cliset, corev1.NamespaceAll, "inject_config")
+	// default watch "mesh" namespace config
+	injector := NewInjector(cliset, configNamespace, "inject_config")
 
 	wh := &webhook.Admission{
 		Handler: injector,
@@ -81,21 +81,17 @@ func (ij *Injector) initWatcher(ctx context.Context) {
 	ij.watcher = watcher
 
 	// 在初始化的时候, 我们阻塞的获取ConfigMap中的配置
+	// 如果用户并未提供相关的配置, 我们将使用默认的配置
 	ij.once.Do(func() {
 		var err error
 		var config *Config
 		if config, err = ij.watcher.Get(); err != nil {
-			log.Println("error: ", err)
-
-			if errors.IsNotFound(err) {
-				ij.updateConfig(NewDefaultConfig())
-			} else {
-				panic(err)
-			}
+			sugar.Warn("injector set default config")
+			_ = ij.updateConfig(NewDefaultConfig())
 
 		} else if err = ij.updateConfig(config); err != nil {
 
-			log.Println("error: ", err)
+			sugar.Error("injector update config error: ", err)
 		}
 	})
 
@@ -110,10 +106,10 @@ func (ij *Injector) Handle(ctx context.Context, req admission.Request) admission
 	pod := &corev1.Pod{}
 	if err := json.Unmarshal(req.Object.Raw, pod); err != nil {
 		log.Println("fishnet injector webhook is unable to deserialize the pod, error: ", err.Error())
-
 		return admission.Denied("unable deserialize pod")
 	}
 
+	sugar.Infof("webhook receive the pod %s that needs to be injected", pod.Name)
 	return ij.injectLogic(pod, req)
 }
 
@@ -141,11 +137,8 @@ func (ij *Injector) injectLogic(originPod *corev1.Pod, req admission.Request) ad
 	// build patch for delta pod and origin pod
 	patch, err := createJSONPatch(originPod, mergePod)
 	if err != nil {
-
 		return admission.Allowed("")
 	}
-
-	log.Println("mergePod metadata labels: ", mergePod.Labels)
 
 	return admission.Patched("inject success", patch...)
 }
@@ -179,6 +172,7 @@ func postProcessPod(mergePod *corev1.Pod, config *Config) error {
 
 	// 重排容器顺序
 	if err := reorderContainer(mergePod, config); err != nil {
+		sugar.Errorf("reorder pod: %s container error: %v", mergePod.Name, err)
 		return err
 	}
 
@@ -189,6 +183,7 @@ func postProcessPod(mergePod *corev1.Pod, config *Config) error {
 // 后续也许需要对initContainers进行重排序
 func reorderContainer(pod *corev1.Pod, config *Config) error {
 
+	// 默认将envoyproxy放在最后
 	proxyLocation := moveLast
 
 	if config.ValueConfig.AfterProxyStart {
@@ -199,10 +194,11 @@ func reorderContainer(pod *corev1.Pod, config *Config) error {
 	containers := []corev1.Container{}
 	var proxy *corev1.Container
 	for _, c := range pod.Spec.Containers {
-		if c.Name != ProxyContainerName {
-			containers = append(containers, c)
-		} else {
+		c := c
+		if c.Name == ProxyContainerName {
 			proxy = &c
+		} else {
+			containers = append(containers, c)
 		}
 	}
 
@@ -263,19 +259,20 @@ func applyMetadata(pod *corev1.Pod, config *Config) {
 		pod.Labels[key] = val
 	}
 
-	if _, ok := pod.Labels[sidecarInjectAnnotation]; !ok {
-		pod.Labels[sidecarInjectAnnotation] = "true"
+	if _, ok := pod.Annotations[sidecarInjectAnnotation]; !ok {
+		pod.Annotations[sidecarInjectAnnotation] = "true"
 	}
 
 	//TODO set status metadata
 }
 
 func (ij *Injector) updateConfig(injectConfig *Config) error {
-	log.Println("update a new inject config")
+
 	ij.mux.Lock()
 	defer ij.mux.Unlock()
 
 	ij.Config = injectConfig
+	sugar.Debug("sync injector config success")
 
 	return nil
 }
@@ -361,6 +358,7 @@ func runTemplate(originalPod *corev1.Pod, config *Config) (*corev1.Pod, error) {
 	if err := config.InitTemplate.Execute(&initBuf, &data); err != nil {
 		log.Println("exec template error: ", err.Error())
 	}
+
 	templatePod, _ = overlayPod(templatePod, initBuf.Bytes())
 
 	// sidecar模板渲染
@@ -371,12 +369,14 @@ func runTemplate(originalPod *corev1.Pod, config *Config) (*corev1.Pod, error) {
 	}
 	templatePod, _ = overlayPod(templatePod, sidecarBuf.Bytes())
 
-	// 合并成模板pod
+	// TODO:
+
 	templateBytes, err := json.Marshal(templatePod)
 	if err != nil {
 		return nil, err
 	}
 
+	// 将模板pod合并到originalPod上
 	retPod, err := overlayPod(copyOriginPod, templateBytes)
 	if err != nil {
 		return nil, err

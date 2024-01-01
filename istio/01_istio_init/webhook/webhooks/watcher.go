@@ -2,11 +2,10 @@ package webhooks
 
 import (
 	"context"
+	"fishnet-inject/sugar"
 	"fmt"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"log"
 )
@@ -59,6 +58,7 @@ func NewConfigMapWatch(client *kubernetes.Clientset, name, namespace, configKey 
 		}
 
 		if w.handler != nil {
+			sugar.Debugf("%s handler fishnet config", w.name)
 			if err := w.handler(fishnetConfig); err != nil {
 				log.Println(err)
 			}
@@ -77,23 +77,17 @@ func (c *ConfigMapWatcher) Get() (*Config, error) {
 		Get(context.TODO(), InjectorConfigMapKey, metav1.GetOptions{})
 
 	if err != nil {
-		if errors.IsNotFound(err) {
-			return nil, errors.NewNotFound(
-				schema.ParseGroupResource("configmaps"),
-				InjectorConfigMapKey,
-			)
-		} else {
-			return nil, err
-		}
+		sugar.Errorf("%s configmap in %s namespace is not found", InjectorConfigMapKey, c.namespace)
+		return nil, err
 	}
 
 	return readConfigMap(configMap, c.configKey)
 }
 
 func (c *ConfigMapWatcher) Run(stop <-chan struct{}) {
-	log.Println("configmap watcher start")
-	c.configMapInformer.Run(stop)
+	sugar.Infof("%s watch %s namespace configmap component running", c.name, c.namespace)
 
+	c.configMapInformer.Run(stop)
 	log.Println("configmap watcher closed")
 }
 

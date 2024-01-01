@@ -41,10 +41,26 @@ func Info(args ...any) {
 	sugaredLogger.Infoln(args...)
 }
 
+func Infof(tmpl string, args ...any) {
+	sugaredLogger.Infof(tmpl, args...)
+}
+
+func Warn(args ...any) {
+	sugaredLogger.Warnln(args...)
+}
+
 func Error(args ...any) {
 	sugaredLogger.Errorln(args...)
 }
 
+func Errorf(tmpl string, args ...any) {
+	sugaredLogger.Errorf(tmpl, args...)
+}
+
 func Debug(args ...any) {
 	sugaredLogger.Debugln(args...)
+}
+
+func Debugf(tmpl string, args ...any) {
+	sugaredLogger.Debugf(tmpl, args...)
 }

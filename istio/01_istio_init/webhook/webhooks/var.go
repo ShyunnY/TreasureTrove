@@ -17,6 +17,8 @@ const (
 	InjectorConfigMapKey = "fishnet-injector-config"
 )
 
+const configNamespace = "mesh"
+
 const (
 	moveLast = iota
 	moveFirst
