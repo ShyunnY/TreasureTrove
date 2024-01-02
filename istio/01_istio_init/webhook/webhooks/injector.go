@@ -24,11 +24,18 @@ type InjectorWebhook struct {
 	*admission.Webhook
 }
 
-func NewInjectorWebhook() *InjectorWebhook {
+func NewInjectorWebhook() (*InjectorWebhook, error) {
 	injectWh := &InjectorWebhook{}
 
-	client, _ := kube.NewClient(kube.ClientConfig{})
-	cliset, _ := client.ClientSet()
+	client, connErr := kube.NewClient(kube.ClientConfig{})
+	if connErr != nil {
+		return nil, connErr
+	}
+
+	cliset, err := client.ClientSet()
+	if connErr != nil {
+		return nil, err
+	}
 
 	// default watch "mesh" namespace config
 	injector := NewInjector(cliset, configNamespace, "inject_config")
@@ -38,7 +45,7 @@ func NewInjectorWebhook() *InjectorWebhook {
 	}
 	injectWh.Webhook = wh
 
-	return injectWh
+	return injectWh, nil
 }
 
 // Injector

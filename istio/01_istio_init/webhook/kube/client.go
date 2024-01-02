@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"fishnet-inject/sugar"
 	"fmt"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -29,6 +30,7 @@ func NewClient(cc ClientConfig) (*Client, error) {
 	}
 
 	if cc.KubeConfig == "" {
+
 		configPath = "D:\\treasure\\istio\\01_istio_init\\webhook\\kubeconfig"
 	} else {
 		configPath = cc.KubeConfig
@@ -39,6 +41,8 @@ func NewClient(cc ClientConfig) (*Client, error) {
 		kubeconfig: configPath,
 	}
 	if err := cli.conn(); err != nil {
+		sugar.Error("kube client connection k8s api-server error: ", err)
+
 		return nil, err
 	}
 

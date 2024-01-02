@@ -1,7 +1,9 @@
 package webhooks
 
 import (
+	"fishnet-inject/sugar"
 	"net/http"
+	"os"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
@@ -17,7 +19,11 @@ func NewWebhookServer() webhook.Server {
 		KeyName:  "tls-key.pem",
 	})
 
-	injectWh := NewInjectorWebhook()
+	injectWh, err := NewInjectorWebhook()
+	if err != nil {
+		sugar.Error("create inject webhook error: ", err)
+		os.Exit(1)
+	}
 
 	// 自动注入webhook注册
 	sre.Register("/look", injectWh)
