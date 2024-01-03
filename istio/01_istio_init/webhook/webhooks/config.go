@@ -18,6 +18,8 @@ type Config struct {
 	// TODO: 目前我们使用字符串代替, 将来会使用go-control-plane的Envoy proto
 	// TODO: base config我认为将直接存放在envoy中
 	ProxyConfig *string `json:"proxyConfig" yaml:"proxyConfig"`
+
+	td *templateData
 }
 
 func (c *Config) setDefault() {
@@ -35,8 +37,50 @@ func (c *Config) setDefault() {
 		// TODO: 将来会使用xds时候, 我们会进行自动注入配置
 	}
 
+	if c.td == nil {
+		c.td = newTemplateData()
+	}
+
 	c.ValueConfig = newDefaultValue(c.ValueConfig)
 
+}
+
+func newTemplateData() *templateData {
+
+	td := &templateData{
+		SidecarName:        "fishnet-proxy",
+		SidecarImage:       "envoyproxy/envoy-alpine:v1.21.0",
+		SidecarEnvs:        []corev1.EnvVar{},
+		SidecarArgs:        []string{},
+		InitContainerName:  "fishnet-init",
+		InitContainerImage: "docker.io/istio/proxyv2:1.20.1",
+		InitContainerArgs: []string{
+			"istio-iptables",
+			"-p",
+			`"15001"`,
+			"-z",
+			`"15006"`,
+			"-u",
+			`"1337"`,
+			"-m",
+			"REDIRECT",
+			"-i",
+			`'*'`,
+			`-x`,
+			`""`,
+			"-b",
+			`'*'`,
+			"-d",
+			"15090,15021,15020",
+			"--log_output_level=default:info",
+		},
+	}
+
+	return td
+}
+
+func (c *Config) getTemplateData() *templateData {
+	return c.td
 }
 
 func unmarshalConfig(data []byte) (*Config, error) {
@@ -162,5 +206,16 @@ type Probes struct {
 	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty" yaml:"readinessProbe"`
 }
 
-type TemplateData struct {
+// TemplateData
+// 将内联到Config中
+type templateData struct {
+	// sidecar config
+	SidecarName  string
+	SidecarImage string
+	SidecarEnvs  []corev1.EnvVar
+	SidecarArgs  []string
+
+	InitContainerName  string
+	InitContainerImage string
+	InitContainerArgs  []string
 }

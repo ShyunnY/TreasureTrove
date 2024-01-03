@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fishnet-inject/kube"
+	"fishnet-inject/sugar"
 	"fmt"
 	"github.com/stretchr/testify/assert"
 	"gomodules.xyz/jsonpatch/v2"
@@ -15,6 +16,10 @@ import (
 	"testing"
 	"time"
 )
+
+func init() {
+	sugar.InitLogger()
+}
 
 var initPatch = `
 spec:
@@ -332,13 +337,14 @@ spec:
 
 	for _, p := range tests {
 		retPod, err := runTemplate(p.pod, p.config)
+		assert.NoError(t, err)
+		assert.NotNil(t, retPod)
 		assert.Equal(t, p.expectInitRequestMemory, retPod.Spec.InitContainers[0].Resources.Requests.Memory().String())
 		assert.Equal(t, p.expectInitLimitMemory, retPod.Spec.InitContainers[0].Resources.Limits.Memory().String())
 
 		assert.Equal(t, p.expectSidecarRequestMemory, retPod.Spec.Containers[0].Resources.Requests.Memory().String())
 		assert.Equal(t, p.expectSidecarLimitMemory, retPod.Spec.Containers[0].Resources.Limits.Memory().String())
-		assert.NotNil(t, retPod)
-		assert.NoError(t, err)
+
 	}
 
 }

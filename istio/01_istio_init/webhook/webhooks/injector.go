@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fishnet-inject/kube"
+	"fishnet-inject/render"
 	"fishnet-inject/sugar"
 	"gomodules.xyz/jsonpatch/v2"
+	"io"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/mergepatch"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
@@ -50,6 +52,7 @@ func NewInjectorWebhook() (*InjectorWebhook, error) {
 
 // Injector
 // TODO: 我们需要确保幂等性
+// TODO: 还需要合理进行错误处理
 type Injector struct {
 	Config *Config
 	mux    *sync.RWMutex
@@ -355,31 +358,50 @@ func runTemplate(originalPod *corev1.Pod, config *Config) (*corev1.Pod, error) {
 	templatePod := &corev1.Pod{}
 	copyOriginPod := originalPod.DeepCopy()
 
-	// TODO: 我们从Config中获取渲染模板数据的数据
-	data := TemplateData{}
+	// get templateData for dynamic Config
+	var overlayErr error
+	td := config.getTemplateData()
+	rd := render.NewRender()
 
-	// run render init template
+	// add init template
 	var initBuf bytes.Buffer
-	if err := config.InitTemplate.Execute(&initBuf, &data); err != nil {
-		sugar.Error("init template execute error: ", err)
+	if err := rd.AddFileTemplate(render.NewRenderData(func() (io.Writer, any) {
+
+		return &initBuf, td
+	}, func(writer io.Writer) error {
+
+		initBuf := writer.(*bytes.Buffer)
+		if templatePod, overlayErr = overlayPod(templatePod, initBuf.Bytes()); overlayErr != nil {
+			return overlayErr
+		}
+		return nil
+	}), "tpls/initContainer.tpl"); err != nil {
 		return nil, err
+	}
+
+	// add sidecar template
+	var sidecarBuf bytes.Buffer
+	if err := rd.AddFileTemplate(render.NewRenderData(func() (io.Writer, any) {
+
+		return &sidecarBuf, td
+	}, func(writer io.Writer) error {
+
+		sidecarBuf := writer.(*bytes.Buffer)
+		if templatePod, overlayErr = overlayPod(templatePod, sidecarBuf.Bytes()); overlayErr != nil {
+			return overlayErr
+		}
+		return nil
+	}), "tpls/sidecar.tpl"); err != nil {
+		return nil, err
+	}
+
+	// running render template
+	if renderErr := rd.RunRenderTemplate(); renderErr != nil {
+		sugar.Error("injector render template error: ", renderErr)
+		return nil, renderErr
 	}
 
 	var mergeErr error
-	if templatePod, mergeErr = overlayPod(templatePod, initBuf.Bytes()); mergeErr != nil {
-		sugar.Error("injector merge init template error: ", mergeErr)
-	}
-
-	// run render sidecar template
-	var sidecarBuf bytes.Buffer
-	if err := config.SidecarTemplate.Execute(&sidecarBuf, &data); err != nil {
-		sugar.Error("sidecar template execute error: ", err)
-		return nil, err
-	}
-	if templatePod, mergeErr = overlayPod(templatePod, sidecarBuf.Bytes()); mergeErr != nil {
-		sugar.Error("injector merge sidecar template error: ", mergeErr)
-	}
-
 	templatePod, mergeErr = mergeCustomTemplate(templatePod, originalPod, config)
 	if mergeErr != nil {
 		sugar.Error("injector merge custom template error: ", mergeErr)
