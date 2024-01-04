@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fishnet-inject/kube"
+	"fishnet-inject/render"
 	"fishnet-inject/sugar"
 	"fmt"
 	"github.com/stretchr/testify/assert"
 	"gomodules.xyz/jsonpatch/v2"
+	"io"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"os"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"testing"
 	"time"
@@ -347,4 +350,28 @@ spec:
 
 	}
 
+}
+
+func TestRender_SidecarTemplate(t *testing.T) {
+
+	rd := render.NewRender()
+	config := NewTemplateData()
+
+	assert.NoError(t, rd.AddFileTemplate(render.NewRenderData(func() (io.Writer, any) {
+		return os.Stdout, config
+	}, nil), "tpls/sidecar.tpl"))
+
+	assert.NoError(t, rd.RunRenderTemplate())
+
+}
+
+func TestRender_InitContainerTemplate(t *testing.T) {
+	rd := render.NewRender()
+	config := NewTemplateData()
+
+	assert.NoError(t, rd.AddFileTemplate(render.NewRenderData(func() (io.Writer, any) {
+		return os.Stdout, config
+	}, nil), "tpls/initContainer.tpl"))
+
+	assert.NoError(t, rd.RunRenderTemplate())
 }

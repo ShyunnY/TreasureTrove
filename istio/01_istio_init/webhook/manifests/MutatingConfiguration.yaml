@@ -26,4 +26,5 @@ webhooks:
     sideEffects: None
     objectSelector:
       matchLabels:
+        # 将所有带有fishnet.inject: "true"的Pod都执行自动注入
         fishnet.inject: "true"

@@ -6,46 +6,46 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"log"
-	"text/template"
 )
 
 // Config 自动注入的配置
 type Config struct {
-	InitTemplate    *template.Template `json:"initTemplate" yaml:"initTemplate"`
-	SidecarTemplate *template.Template `json:"sidecarTemplate" yaml:"sidecarTemplate"`
-	ValueConfig     *Value             `json:"valueConfig" yaml:"valueConfig"`
+
+	// ValueConfig用于控制injector的行为.
+	// 例如: 控制被注入Pod的labels,annotations, sidecarEnv, CustomTemplate等
+	ValueConfig *Value `json:"valueConfig" yaml:"valueConfig"`
 
 	// TODO: 目前我们使用字符串代替, 将来会使用go-control-plane的Envoy proto
 	// TODO: base config我认为将直接存放在envoy中
-	ProxyConfig *string `json:"proxyConfig" yaml:"proxyConfig"`
+	ProxyConfig any `json:"proxyConfig" yaml:"proxyConfig"`
 
 	td *templateData
 }
 
+func NewDefaultConfig() *Config {
+
+	cfg := &Config{}
+	cfg.setDefault()
+
+	return cfg
+}
+
 func (c *Config) setDefault() {
 
-	if c.InitTemplate == nil {
-		c.InitTemplate = template.Must(template.New("init-containers").Parse(initContainerTemplate))
-	}
-
-	if c.SidecarTemplate == nil {
-		c.SidecarTemplate = template.Must(template.New("sidecar-containers").Parse(sidecarContainerTemplate))
-	}
-
 	// 不设置proxyConfig, 或者将ProxyConfig显式设置为空
-	if c.ProxyConfig == nil || *c.ProxyConfig == "" {
+	if c.ProxyConfig == nil {
 		// TODO: 将来会使用xds时候, 我们会进行自动注入配置
 	}
 
 	if c.td == nil {
-		c.td = newTemplateData()
+		c.td = NewTemplateData()
 	}
 
 	c.ValueConfig = newDefaultValue(c.ValueConfig)
 
 }
 
-func newTemplateData() *templateData {
+func NewTemplateData() *templateData {
 
 	td := &templateData{
 		SidecarName:        "fishnet-proxy",
@@ -54,32 +54,13 @@ func newTemplateData() *templateData {
 		SidecarArgs:        []string{},
 		InitContainerName:  "fishnet-init",
 		InitContainerImage: "docker.io/istio/proxyv2:1.20.1",
-		InitContainerArgs: []string{
-			"istio-iptables",
-			"-p",
-			`"15001"`,
-			"-z",
-			`"15006"`,
-			"-u",
-			`"1337"`,
-			"-m",
-			"REDIRECT",
-			"-i",
-			`'*'`,
-			`-x`,
-			`""`,
-			"-b",
-			`'*'`,
-			"-d",
-			"15090,15021,15020",
-			"--log_output_level=default:info",
-		},
+		InitContainerArgs:  initContainerArgs,
 	}
 
 	return td
 }
 
-func (c *Config) getTemplateData() *templateData {
+func (c *Config) GetTemplateData() *templateData {
 	return c.td
 }
 
@@ -97,17 +78,9 @@ func unmarshalConfig(data []byte) (*Config, error) {
 	return &injectConfig, nil
 }
 
-func NewDefaultConfig() *Config {
-
-	cfg := &Config{}
-	cfg.setDefault()
-
-	return cfg
-}
-
 type Value struct {
 	// sidecar proxy env
-	ProxyEnv map[string]string `json:"proxyEnv,omitempty" yaml:"proxyEnv"`
+	SidecarEnv map[string]string `json:"proxyEnv,omitempty" yaml:"proxyEnv"`
 	// injector extra annotations
 	Annotations map[string]string `json:"annotations,omitempty" yaml:"annotations"`
 	// injector extra labels
@@ -138,8 +111,8 @@ func newDefaultValue(origin *Value) *Value {
 		origin.Annotations = map[string]string{}
 	}
 
-	if origin.ProxyEnv == nil {
-		origin.ProxyEnv = map[string]string{}
+	if origin.SidecarEnv == nil {
+		origin.SidecarEnv = map[string]string{}
 	}
 	// 如果没有明确将injectProbe设置为false, 我们都注入探针
 	if origin.InjectProbe != nil && *origin.InjectProbe == false {
@@ -147,6 +120,7 @@ func newDefaultValue(origin *Value) *Value {
 	}
 
 	probes := Probes{}
+	// TODO: 探针port需要与Dynamic Config, InitContainer的iptables进行同步
 	probes.ReadinessProbe = &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{

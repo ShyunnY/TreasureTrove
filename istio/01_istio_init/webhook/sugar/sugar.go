@@ -20,12 +20,13 @@ func InitLogger() {
 
 	// build zap.config
 	logConfig := zap.Config{
-		Level:            zap.NewAtomicLevelAt(zap.DebugLevel),
-		Encoding:         jsonEncoding,
-		EncoderConfig:    encoderConfig,
-		OutputPaths:      []string{"stdout"},
-		ErrorOutputPaths: []string{"stderr"},
-		DisableCaller:    true,
+		Level:             zap.NewAtomicLevelAt(zap.DebugLevel),
+		Encoding:          jsonEncoding,
+		EncoderConfig:     encoderConfig,
+		OutputPaths:       []string{"stdout"},
+		ErrorOutputPaths:  []string{"stderr"},
+		DisableCaller:     true,
+		DisableStacktrace: true,
 	}
 
 	logger, err := logConfig.Build()

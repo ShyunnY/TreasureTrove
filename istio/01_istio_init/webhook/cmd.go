@@ -13,7 +13,7 @@ func main() {
 
 	// init sugar logger
 	sugar.InitLogger()
-	log.SetLogger(logr.New(&sugar.Sink{})) // TODO: 我们需要实现一个controller-runtime log sink
+	log.SetLogger(logr.Discard()) // TODO: 我们需要实现一个controller-runtime log sink
 
 	// 初始化WebhookServer
 	sre := webhooks.NewWebhookServer()

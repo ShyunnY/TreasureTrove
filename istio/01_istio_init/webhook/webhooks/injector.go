@@ -7,6 +7,7 @@ import (
 	"fishnet-inject/kube"
 	"fishnet-inject/render"
 	"fishnet-inject/sugar"
+	"fishnet-inject/webhooks/tpls"
 	"gomodules.xyz/jsonpatch/v2"
 	"io"
 	corev1 "k8s.io/api/core/v1"
@@ -119,7 +120,7 @@ func (ij *Injector) Handle(ctx context.Context, req admission.Request) admission
 		return admission.Denied("unable deserialize pod")
 	}
 
-	sugar.Infof("webhook receive the pod %s that needs to be injected", pod.Name)
+	sugar.Infof("webhook receive the pod '%s' that needs to be injected", pod.Name)
 	return ij.injectLogic(pod, req)
 }
 
@@ -136,6 +137,7 @@ func (ij *Injector) injectLogic(originPod *corev1.Pod, req admission.Request) ad
 	// render template
 	mergePod, err := runTemplate(originPod, ij.getConfig())
 	if err != nil {
+		sugar.Error("run template error: ", err)
 		return admission.Allowed("")
 	}
 
@@ -155,20 +157,20 @@ func (ij *Injector) injectLogic(originPod *corev1.Pod, req admission.Request) ad
 
 func postProcessPod(mergePod *corev1.Pod, config *Config) error {
 
+	// robustness checking
 	if mergePod.Annotations == nil {
 		mergePod.Annotations = map[string]string{}
 	}
-
 	if mergePod.Labels == nil {
 		mergePod.Labels = map[string]string{}
 	}
 
-	// 设置环境变量
-	if len(config.ValueConfig.ProxyEnv) > 0 {
+	// set sidecarEnv
+	if len(config.ValueConfig.SidecarEnv) > 0 {
 		if container := findSidecarContainer(ProxyContainerName, mergePod.Spec.Containers); container == nil {
 			return nil
 		} else {
-			setContainerEnv(container, config.ValueConfig.ProxyEnv)
+			setContainerEnv(container, config.ValueConfig.SidecarEnv)
 		}
 	}
 
@@ -178,11 +180,13 @@ func postProcessPod(mergePod *corev1.Pod, config *Config) error {
 	overwriteProbe(mergePod, config)
 
 	// 设置其余元数据
-	applyMetadata(mergePod, config)
+	if err := applyMetadata(mergePod, config); err != nil {
+		return err
+	}
 
 	// 重排容器顺序
 	if err := reorderContainer(mergePod, config); err != nil {
-		sugar.Errorf("reorder pod: %s container error: %v", mergePod.Name, err)
+		sugar.Error("reorder pod: %s container error: %v", mergePod.Name, err)
 		return err
 	}
 
@@ -259,7 +263,7 @@ func shouldOverwriteProbe(annotations map[string]string) bool {
 	return false
 }
 
-func applyMetadata(pod *corev1.Pod, config *Config) {
+func applyMetadata(pod *corev1.Pod, config *Config) error {
 
 	for key, val := range config.ValueConfig.Annotations {
 		pod.Annotations[key] = val
@@ -273,7 +277,23 @@ func applyMetadata(pod *corev1.Pod, config *Config) {
 		pod.Annotations[sidecarInjectAnnotation] = "true"
 	}
 
-	//TODO set status metadata
+	// set status metadata
+	if _, ok := pod.Annotations[sidecarInjectStatus]; !ok {
+		status := &SidecarInjectStatus{}
+
+		status.InitContainers = append(status.InitContainers, config.td.InitContainerImage)
+		status.Containers = append(status.Containers, config.td.SidecarImage)
+		status.Revision = "default" //TODO:  currently set to the default
+
+		if raw, err := json.Marshal(status); err != nil {
+			return err
+		} else {
+			pod.Annotations[sidecarInjectStatus] = string(raw)
+		}
+
+	}
+
+	return nil
 }
 
 func (ij *Injector) updateConfig(injectConfig *Config) error {
@@ -360,12 +380,12 @@ func runTemplate(originalPod *corev1.Pod, config *Config) (*corev1.Pod, error) {
 
 	// get templateData for dynamic Config
 	var overlayErr error
-	td := config.getTemplateData()
+	td := config.GetTemplateData()
 	rd := render.NewRender()
 
 	// add init template
 	var initBuf bytes.Buffer
-	if err := rd.AddFileTemplate(render.NewRenderData(func() (io.Writer, any) {
+	if err := rd.AddTextTemplate("initContainer_tmpl", render.NewRenderData(func() (io.Writer, any) {
 
 		return &initBuf, td
 	}, func(writer io.Writer) error {
@@ -375,13 +395,13 @@ func runTemplate(originalPod *corev1.Pod, config *Config) (*corev1.Pod, error) {
 			return overlayErr
 		}
 		return nil
-	}), "tpls/initContainer.tpl"); err != nil {
+	}), tpls.InitContainerTemplate); err != nil {
 		return nil, err
 	}
 
 	// add sidecar template
 	var sidecarBuf bytes.Buffer
-	if err := rd.AddFileTemplate(render.NewRenderData(func() (io.Writer, any) {
+	if err := rd.AddTextTemplate("sidecar_tmpl", render.NewRenderData(func() (io.Writer, any) {
 
 		return &sidecarBuf, td
 	}, func(writer io.Writer) error {
@@ -391,7 +411,7 @@ func runTemplate(originalPod *corev1.Pod, config *Config) (*corev1.Pod, error) {
 			return overlayErr
 		}
 		return nil
-	}), "tpls/sidecar.tpl"); err != nil {
+	}), tpls.SidecarTemplate); err != nil {
 		return nil, err
 	}
 
@@ -527,4 +547,10 @@ func checkInject(pod *corev1.Pod) bool {
 	}
 
 	return true
+}
+
+type SidecarInjectStatus struct {
+	InitContainers []string `json:"initContainers,omitempty"`
+	Containers     []string `json:"containers,omitempty"`
+	Revision       string   `json:"revision,omitempty"`
 }

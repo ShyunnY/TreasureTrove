@@ -65,74 +65,10 @@ func TestRender_AddFileTemplate(t *testing.T) {
 
 	err := render.AddFileTemplate(NewRenderData(func() (io.Writer, any) {
 		return os.Stdout, "jane"
-	}, func(writer io.Writer) {
-		writer.Write([]byte("\n hello,postHook \n"))
-	}), "test.tpl")
+	}, nil), "test.tpl")
 	assert.NoError(t, err)
 
 	runErr := render.RunRenderTemplate()
 	assert.NoError(t, runErr)
 
 }
-
-//func TestRender_SidecarTemplate(t *testing.T) {
-//
-//	render := NewRender()
-//	tc := webhooks.TemplateData{
-//		SidecarName:  "envoyproxy",
-//		SidecarImage: "envoyproxy:2.0",
-//		SidecarEnvs: []corev1.EnvVar{
-//			{
-//				Name:  "usr",
-//				Value: "Peter",
-//			},
-//		},
-//		SidecarArgs: []string{
-//			"-a",
-//			"-b",
-//		},
-//	}
-//
-//	assert.NoError(t, render.AddFileTemplate(func() (io.Writer, any) {
-//		return os.Stdout, tc
-//	}, "tpls/sidecar.tpl"))
-//
-//	assert.NoError(t, render.RunRenderTemplate())
-//
-//}
-
-//func TestRender_InitContainerTemplate(t *testing.T) {
-//
-//	render := NewRender()
-//	tc := webhooks.TemplateData{
-//		InitContainerImage: "fishnet.io/init:2.0",
-//		InitContainerName:  "fishnet-init",
-//		InitContainerArgs: []string{
-//			"istio-iptables",
-//			"-p",
-//			"15001",
-//			"-z",
-//			"15006",
-//			"-u",
-//			"1337",
-//			"-m",
-//			"REDIRECT",
-//			"-i",
-//			`'*'`,
-//			`-x`,
-//			`""`,
-//			"-b",
-//			`'*'`,
-//			"-d",
-//			"15090,15021,15020",
-//			"--log_output_level=default:info",
-//		},
-//	}
-//
-//	assert.NoError(t, render.AddFileTemplate(func() (io.Writer, any) {
-//		return os.Stdout, tc
-//	}, "tpls/initContainer.tpl"))
-//
-//	assert.NoError(t, render.RunRenderTemplate())
-//
-//}
