@@ -7,16 +7,47 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
+type WebhookServerConfig struct {
+	Port     int
+	CertDir  string
+	CertName string
+	KeyName  string
+}
+
+func (wsc *WebhookServerConfig) Default() {
+
+	if wsc.Port == 0 {
+		wsc.Port = 9527
+	}
+
+	if wsc.CertDir == "" {
+		// TODO: Warnings! mock data use on the test machine only
+		wsc.CertDir = "D:\\treasure\\istio\\01_istio_init\\webhook"
+	}
+
+	if wsc.CertName == "" {
+		// TODO: Warnings! mock data use on the test machine only
+		wsc.CertName = "tls.pem"
+	}
+
+	if wsc.KeyName == "" {
+		// TODO: Warnings! mock data use on the test machine only
+		wsc.KeyName = "tls-key.pem"
+	}
+
+}
+
 // NewWebhookServer
 // 创建webhook服务
-func NewWebhookServer() webhook.Server {
+func NewWebhookServer(conf WebhookServerConfig) webhook.Server {
+
+	conf.Default()
 
 	sre := webhook.NewServer(webhook.Options{
-		Port: 9527,
-		// 将在certDir下寻找证书
-		CertDir:  "D:\\treasure\\istio\\01_istio_init\\webhook",
-		CertName: "tls.pem",
-		KeyName:  "tls-key.pem",
+		Port:     conf.Port,
+		CertDir:  conf.CertDir,
+		CertName: conf.CertName,
+		KeyName:  conf.KeyName,
 	})
 
 	injectWh, err := NewInjectorWebhook()
