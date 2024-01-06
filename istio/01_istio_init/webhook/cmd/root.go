@@ -3,6 +3,7 @@ package cmd
 import (
 	_ "embed"
 	"fishnet-inject/cmd/injector"
+	"fishnet-inject/utils"
 	"fishnet-inject/vars"
 	"fmt"
 	"github.com/logrusorgru/aurora"
@@ -41,10 +42,10 @@ func version() string {
 func init() {
 
 	cobra.AddTemplateFuncs(template.FuncMap{
-		"blue":    blue,
-		"green":   green,
-		"rpadx":   rpadx,
-		"rainbow": rainbow,
+		"blue":    utils.Blue,
+		"green":   utils.Green,
+		"rpadx":   utils.Rpadx,
+		"rainbow": utils.Rainbow,
 	})
 
 	// set usage template

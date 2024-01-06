@@ -1,4 +1,4 @@
-package cmd
+package utils
 
 import (
 	"fmt"
@@ -26,20 +26,20 @@ var colorRender = []func(v any) string{
 	},
 }
 
-func blue(s string) string {
+func Blue(s string) string {
 	return aurora.BrightBlue(s).String()
 }
 
-func green(s string) string {
+func Green(s string) string {
 	return aurora.BrightGreen(s).String()
 }
 
-func rainbow(s string) string {
+func Rainbow(s string) string {
 	s0 := s[0]
 	return colorRender[int(s0)%(len(colorRender)-1)](s)
 }
 
-func rpadx(s string, padding int) string {
+func Rpadx(s string, padding int) string {
 	template := fmt.Sprintf("%%-%ds", padding)
-	return rainbow(fmt.Sprintf(template, s))
+	return Rainbow(fmt.Sprintf(template, s))
 }

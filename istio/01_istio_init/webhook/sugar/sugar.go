@@ -52,7 +52,6 @@ func InitLogger(level ...string) {
 	// 我们使用sugar log
 	sugaredLogger = logger.Sugar()
 
-	// TODO: 我们需要实现一个controller-runtime log sink
 	log.SetLogger(logr.Discard())
 }
 
