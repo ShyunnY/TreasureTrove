@@ -4,7 +4,10 @@ Envoy Gateway是一个开源项目，用于将[Envoy Proxy](https://www.envoypro
 
 Envoy Gateway项目的高级目标是通过支持多种入口和**L7/L4**流量路由用例的富有表现力、可扩展、面向角色的API来降低使用难度.
 
+为了便于我们阅读及理解后续概念, 我们首先明确以下两个概念:
 
++ **EnvoyProxy**: Gateway实例, 在EnvoyGateway中也被称为数据平面(data-plane), 它是实际上处理南北流量的实例
++ **EnvoyGateway**: Gateway控制器, 在EnvoyGateway中也被成为控制平面(control-plane), 它实际上是一个k8s控制器, 它会处理gateway-api请求, 以及动态分发EnvoyProxy的配置.
 
 ### Goal
 
@@ -474,3 +477,314 @@ telemetry:
           port: 4318
           protocol: http
 ```
+
+
+
+### Backend TrafficPolicy
+
+BackendTrafficPolicy是一种隐含的层次结构类型的API，可用于扩展Gateway API。它可以针对Gateway或xRoute（HTTPRoute/GRPCRoute等）进行定位。当定位到Gateway时，它将将BackendTrafficPolicy中配置的设置应用于该Gateway的所有子xRoute资源。如果一个BackendTrafficPolicy定位到一个xRoute，并且不同的BackendTrafficPolicy定位到该路由所属的Gateway，那么将以定位到*xRoute资源的策略中的配置为冲突中的胜出*配置
+
+
+
+例如以下配置, 定位到`king=HTTPRoute`的配置胜出, 将会覆盖gateway级别的配置.
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: default-ipv-policy
+  namespace: default
+spec:
+  protocols:
+    enableIPv6: false
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: eg
+    namespace: default
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: ipv6-support-policy
+  namespace: default
+spec:
+  protocols:
+    enableIPv6: true
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: ipv6-route
+    namespace: default
+```
+
+
+
+#### features-fields
+
+以下是BackendTrafficPolicy部分字段以及其代表的功能
+
+- Protocol configuration  协议配置
+- Circuit breaking  熔断
+- Retries  重试
+- Keep alive probes  保持探针存活
+- Health checking  健康检查
+- Load balancing  负载均衡
+- Rate limit  速率限制
+
+
+
+#### design
+
++ 该API仅支持单个targetRef, 并且只能绑定到`Gateway`或`Route`（HTTPRoute/GRPCRoute等）资源。 
+
++ :star: 此API资源必须属于与其目标资源相同的命名空间。 
++ 每个特定Listener（部分）在Gateway中只能附加*一个*策略资源。 
++ 如果策略定位到资源但无法Attach到它，应该在策略状态字段中使用Conflicted=True条件反映此信息。
++ 如果多个策略定位到同一资源，则最旧的资源（基于创建时间戳）将附加到Gateway Listeners，其他资源将不会附加。 
++ 如果策略A具有一个targetRef，其中包含一个sectionName，即它定位到Gateway中的特定Listener，并且策略B有一个targetRef，它定位到同一个Gateway， 则策略A将应用到targetRef.SectionName中定义的特定Listener。 策略B将应用于Gateway中的其余Listeners。策略B将具有一个附加的状态条件Overridden=True
+
+
+
+### Bootstrap Design
+
+Bootstrap配置提供了需要允许高级用户指定他们自定义的Envoy Bootstrap配置，而不是使用Envoy Gateway中定义的默认Bootstrap配置。这使得高级用户能够扩展Envoy Gateway并支持他们的定制用例，例如设置Trace和Stats配置，这些配置在Envoy Gateway中并未提供支持
+
+
+
+我们可以:
+
++ 定义一个API字段，以允许用户指定自定义的引导配置
++ 使用`egctl`工具，使用户能够生成默认的引导配置，并验证其自定义的引导配置
+
+利用现有的EnvoyProxy资源，可以通过使用**parametersRef**字段将其附加到GatewayClass，并在资源内部定义一个Bootstrap字段。如果设置了此字段，其值将用作由Envoy Gateway创建的所有受管Envoy代理的引导配置。也就是说, 我们可以声明一个EnvoyProxy配置, 在声明GatewayClass的时候通过<u>parametersRef字段指明EnvoyProxy</u>配置.
+
+
+
+举个例子: 假设我们希望修改Envoy实例的镜像,我们可以这样做:
+
+1. 声明一个EnvoyProxy配置
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: EnvoyProxy
+   metadata:
+     name: custom-proxy-config
+     namespace: envoy-gateway-system
+   spec:
+     # 配置Envoy Gateway实例的Bootstrap
+     bootstrap: ...
+     provider:
+       type: Kubernetes
+       kubernetes:
+         # 指定Envoy Gateway实例的镜像
+         envoyDeployment:
+           container:
+             image: bitnami/envoy:1.28.0
+   ```
+
+2. 修改GatewayClass配置 
+
+   ```yaml
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: GatewayClass
+   metadata:
+     name: eg
+   spec:
+     controllerName: gateway.envoyproxy.io/gatewayclass-controller
+     # 通过parameterRef引用上面配置的EnvoyProxy
+     parametersRef:
+       group: gateway.envoyproxy.io
+       kind: EnvoyProxy
+       name: custom-proxy-config
+       namespace: envoy-gateway-system
+   ```
+
+
+
+最后我们再看一下EnvoyProxy关于Bootstrap类型定义
+
+```go
+// EnvoyProxySpec定义了EnvoyProxy状态
+type EnvoyProxySpec struct {
+	// Bootstrap定义Envoy引导配置为YAML字符串。
+    // 访问 https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/bootstrap/v3/bootstrap.proto#envoy-v3-api-msg-config-bootstrap-v3-bootstrap
+    // 了解有关语法的更多信息。
+    // 如果设置了此字段，则该字段用作托管的Envoy代理群的引导配置，而不是由Envoy Gateway设置的默认引导配置。
+    // 在Bootstrap中，一些必须与xDS服务器（Envoy Gateway）通信并从中接收xDS资源的字段是不可配置的，设置它们将导致`EnvoyProxy`资源被拒绝。
+	Bootstrap *string `json:"bootstrap,omitempty"`
+}
+```
+
+
+
+
+
+### Client Traffic Policy
+
+ClientTrafficPolicy允许系统管理员配置Envoy代理服务器与下游客户端的行为方式. 这与BackendTrafficPolicy策略相反. 一个作用在`Proxy -> Upstram`, 另一个作用在`Downstream -> Proxy`
+
+
+
+#### features-fields
+
++ Downstream ProxyProtocol 下游代理协议
++ Downstream Keep Alives 下游Keepalive
++ IP Blocking IP黑名单
++ Downstream HTTP3 下游HTTP3
+
+
+
+#### design
+
++ ClientTrafficPolicy API仅支持单个targetRef，并且只能绑定到一个Gateway资源。
++ ClientTrafficPolicy API资源必须属于与Gateway资源*相同*的命名空间。
+
++ 每个特定的Listener（部分）在Gateway中只能附加一个策略资源。如果策略的目标是某个资源，但无法附加到该资源，则此信息应通过Policy Status字段以Conflicted=True的条件反映。
+
++ 如果多个策略都针对相同的资源，基于创建时间戳的最旧资源将附加到Gateway的Listeners，而其他资源则不会。
+
++ 如果Policy A具有一个targetRef，其中包含一个sectionName，即它针对Gateway内的特定Listener，而Policy B具有一个targetRef，它针对整个Gateway，则：
+  + Policy A将应用/附加到targetRef.SectionName中定义的特定Listener。
+  + Policy B将应用于Gateway内的其余Listeners。Policy B将具有一个附加的状态条件，即Overridden=True
+
+
+
+#### TODO: **Config**
+
+我们可以看一下ClientTrafficPolicy配置及其字段:
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: enable-proxy-protocol-policy
+  namespace: default
+spec:
+  # targetRef是此策略附加到的资源的名称。此策略和TargetRef必须位于同一命名空间中，此策略才能生效并应用于Gateway
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: eg
+    namespace: default
+  enableProxyProtocol: true
+```
+
+
+
+
+
+### TODO: ConfigApi
+
+关于control-plane控制平面的配置(由于当前版本EnvoyGateway不包含元数据字段，因为它当前表示为静态配置文件而不是Kubernetes资源).
+
+我们可以通过`$ kubectl get cm envoy-gateway-config -n envoy-gateway-system -o yaml`查看EnvoyGateway的配置.
+
+> 由于 EnvoyGateway 不显示状态，因此 EnvoyGatewaySpec 是内联的
+
+
+
+
+
+
+
+### Egctl
+
+`egctl`是一个可以从EnvoyProxy和Gateway收集配置信息，分析系统配置以诊断EnvoyGateway中的任何问题的命令行工具.
+
+`egctl`的语法如下:
+
+```shell
+$ egctl [command] [entity] [name] [flags]
+```
+
+其中:
+
+- command：指定要对一个或多个资源执行的操作，例如`config`。`version`
+- entity：指定正在执行操作的实体，例如`envoy-proxy`或`envoy-gateway`。
+- name：指定指定实例的名称。
+- flags：指定可选标志。例如，您可以使用`-c`或`--config`标志来指定安装值。
+
+|   Operation    |        Syntax         |                  Description                   |
+| :------------: | :-------------------: | :--------------------------------------------: |
+|   `version`    |    `egctl version`    |               打印当前egctl版本                |
+|    `config`    | `egctl config ENTITY` | 从EnvoyProxy和EnvoyGateway检索有关proxy的配置  |
+|   `analyze`    |    `egctl analyze`    |      分析EnvoyGateway配置以及打印校验信息      |
+| `experimental` | `egctl experimental`  | 用于实验功能的子命令。这些并不能保证向后兼容性 |
+
+
+
+举几个栗子:
+
+```shell
+# 检索QuickStart.yaml中gateway配置的EnvoyProxy
+# 我们去掉冗余数据后可以看到, EnvoyProxy监听10080端口, 我们在Gateway中配置的Listener.port实际上是配置在EnvoyProxy前面的Service上.
+# 然后EnvoyProxy使用xDS中的rDS进行路由匹配, 如果匹配, 再将流量转发到cDS上游
+$ egctl config envoy-proxy listener envoy-default-eg-gw-63522087-7b5fdfc667-7xmk8 -o yaml
+envoy-gateway-system:
+  envoy-default-eg-gw-63522087-7b5fdfc667-7xmk8:
+    dynamicListeners:
+    - activeState:
+        listener:
+          '@type': type.googleapis.com/envoy.config.listener.v3.Listener
+          address:
+            socketAddress:
+              address: 0.0.0.0
+              portValue: 10080
+          defaultFilterChain:
+            filters:
+            - name: envoy.filters.network.http_connection_manager
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                httpFilters:
+                - name: envoy.filters.http.router
+                  typedConfig:
+                    '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                rds:
+                  configSource:
+                    ads: {}
+                    resourceApiVersion: V3
+                  routeConfigName: default/eg-gw/http
+                statPrefix: http
+                upgradeConfigs:
+                - upgradeType: websocket
+                useRemoteAddress: true
+          name: default/eg-gw/http
+
+$ 
+```
+
+
+
+
+
+### Observability
+
+EnvoyGateway也提供了可观测性三板斧: **链路, 日志, 指标**
+
+#### Log
+
+Envoy支持将可扩展的访问日志记录到不同的目标（sinks），如文件、gRPC等。Envoy支持使用预定义字段以及任意的HTTP请求和响应头来定制访问日志格式。Envoy支持多个内置的访问日志过滤器和在运行时注册的扩展过滤器。
+
+Envoy Gateway利用Gateway API来配置受管理的Envoy代理。Gateway API定义了核心、扩展和实现特定的API支持级别，供实现者（例如Envoy Gateway）暴露功能。由于访问日志未在核心或扩展API中涵盖，因此EG应提供一种易于配置的访问日志格式和每个Envoy代理的目标（sinks）。
+
+> 我们可以使用自定义的Sink接收EnvoyProxy产生的日志.
+
+当前:
+
+1. **访问日志Sink支持：**
+   - 文件：将访问日志记录到文件的功能。
+   - OpenTelemetry后端：将访问日志发送到OpenTelemetry后端的能力。
+2. **cel：**
+   - 基于CEL表达式实现访问日志过滤器。这表明打算通过使用CEL表达式作为过滤访问日志的条件，实现更多灵活性
+
+
+
+我们可以配置以下内容:
+
+1. 将访问日志记录到文件：
+   - 针对EnvoyProxy的配置，设定使访问日志被记录到文件的设置。
+2. 将访问日志发送到OpenTelemetry后端：
+   - 针对EnvoyProxy的配置，设定使访问日志被发送到OpenTelemetry后端的设置。
+3. 为EnvoyProxy配置多个访问日志提供程序：
+   - 针对EnvoyProxy的配置，设定多个访问日志提供程序的设置。
