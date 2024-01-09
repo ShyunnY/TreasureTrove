@@ -323,12 +323,14 @@ type RouteContext interface {
 
 ### Controller Metrics
 
-目前，Envoy Gateway控制平面提供log和控制器运行时metrics,但没有任何trace。日志通过我们的专有库（`internal/logging`由`zap`进行填充）进行管理并写入`/dev/stdout`.
+目前，Envoy Gateway控制平面提供log和控制器运行时metrics,但<u>没有支持任何trace</u>。日志通过我们的专有库（`internal/logging`由`zap`进行填充）进行管理并写入`/dev/stdout`.
 
 控制平面的指标：
 
 + 支持Prometheus metrics的**PULL**模式, 并将这些metrics公开在管理地址上。
 + 支持Prometheus metrics的**PUSH**模式，从而通过gRPC或HTTP将指标发送到OpenTelemetry Stats接收器(Sink)中.
+
+
 
 #### **标准**
 
@@ -359,27 +361,26 @@ Envoy Gateway支持PULL/PUSH模式的指标，默认情况下通过Prometheus导
 `EnvoyGatewayTelemetry`
 
 ```go
-// EnvoyGatewayTelemetry defines telemetry configurations for envoy gateway control plane.
-// Control plane will focus on metrics observability telemetry and tracing telemetry later.
+
 // EnvoyGatewayTelemetry定义了Envoy Gateway控制平面的遥测配置, 控制平面将在后续专注于度量观测遥测和跟踪遥测。
 type EnvoyGatewayTelemetry struct {
-	// Metrics defines metrics configuration for envoy gateway.
+    
     // Metrics定义了Envoy Gateway关于metrics的配置
 	Metrics *EnvoyGatewayMetrics `json:"metrics,omitempty"`
+    
 }
 ```
 
 `EnvoyGatewayMetrics`
 
 ```go
-// EnvoyGatewayMetrics defines control plane push/pull metrics configurations.
+
 // EnvoyGatewayMetrics定义了控制平面push/pull指标的策略
 type EnvoyGatewayMetrics struct {
-	// Sinks defines the metric sinks where metrics are sent to.
+
     // Sink定义的是指标应该发送的地方. (我们可以在这进行拓展下游收集器) (push策略)
 	Sinks []EnvoyGatewayMetricSink `json:"sinks,omitempty"`
     
-	// Prometheus defines the configuration for prometheus endpoint.
     // 定义Prometheus的端点配置.  (pull策略)
 	Prometheus *EnvoyGatewayPrometheusProvider `json:"prometheus,omitempty"`
 }
@@ -388,21 +389,12 @@ type EnvoyGatewayMetrics struct {
 `EnvoyGatewayMetricSink`
 
 ```go
-// EnvoyGatewayMetricSink defines control plane
-// metric sinks where metrics are sent to.
-
 // EnvoyGatewayMetricSink定义了控制面需要将指标发送到哪个组件上.
 type EnvoyGatewayMetricSink struct {
-	// Type defines the metric sink type.
-	// EG control plane currently supports OpenTelemetry.
-	// +kubebuilder:validation:Enum=OpenTelemetry
-	// +kubebuilder:default=OpenTelemetry
-    
+
     // 定义了指标Sink的类型, 目前EnvoyGateway仅支持OTEL
+    // 默认为otel
 	Type MetricSinkType `json:"type"`
-    
-	// OpenTelemetry defines the configuration for OpenTelemetry sink.
-	// It's required if the sink type is OpenTelemetry.
     
     // OTEL的相关配置. (需要将Type设置为OpenTelemetry)
 	OpenTelemetry *EnvoyGatewayOpenTelemetrySink `json:"openTelemetry,omitempty"`
@@ -414,22 +406,13 @@ type EnvoyGatewayMetricSink struct {
 ```go
 // otel sink配置
 type EnvoyGatewayOpenTelemetrySink struct {
-	// Host define the sink service hostname.
     
     // otel collector的host
 	Host string `json:"host"`
     
-	// Protocol define the sink service protocol.
-	// +kubebuilder:validation:Enum=grpc;http
-    
     // otel collector的protocol协议. 可选grpc/http
 	Protocol string `json:"protocol"`
-	// Port defines the port the sink service is exposed on.
-	//
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:default=4317
-    
+
     // otel collector的port 默认为4317
 	Port int32 `json:"port,omitempty"`
 }
@@ -438,12 +421,9 @@ type EnvoyGatewayOpenTelemetrySink struct {
 `EnvoyGatewayPrometheusProvider`
 
 ```go
-// EnvoyGatewayPrometheusProvider will expose prometheus endpoint in pull mode.
-
 // EnvoyGatewayPrometheusProvider将暴露端点让Prometheus抓取
 type EnvoyGatewayPrometheusProvider struct {
-	// Disable defines if disables the prometheus metrics in pull mode.
-	
+
     // 控制Prometheus 开启/关闭
 	Disable bool `json:"disable,omitempty"`
 }
@@ -750,19 +730,21 @@ envoy-gateway-system:
                 - upgradeType: websocket
                 useRemoteAddress: true
           name: default/eg-gw/http
-
-$ 
 ```
 
 
 
 
 
-### Observability
+### EnvoyProxy Observability
 
 EnvoyGateway也提供了可观测性三板斧: **链路, 日志, 指标**
 
-#### Log
+#### 第一板斧: Log
+
+日志记录系统中的事件、错误、警告和其他重要信息。日志可以提供对系统内部运行状态的详细记录，用于故障排除、安全审计、和性能分析。
+
+
 
 Envoy支持将可扩展的访问日志记录到不同的目标（sinks），如文件、gRPC等。Envoy支持使用预定义字段以及任意的HTTP请求和响应头来定制访问日志格式。Envoy支持多个内置的访问日志过滤器和在运行时注册的扩展过滤器。
 
@@ -770,15 +752,13 @@ Envoy Gateway利用Gateway API来配置受管理的Envoy代理。Gateway API定�
 
 > 我们可以使用自定义的Sink接收EnvoyProxy产生的日志.
 
-当前:
+当前可以:
 
 1. **访问日志Sink支持：**
    - 文件：将访问日志记录到文件的功能。
    - OpenTelemetry后端：将访问日志发送到OpenTelemetry后端的能力。
 2. **cel：**
    - 基于CEL表达式实现访问日志过滤器。这表明打算通过使用CEL表达式作为过滤访问日志的条件，实现更多灵活性
-
-
 
 我们可以配置以下内容:
 
@@ -788,3 +768,494 @@ Envoy Gateway利用Gateway API来配置受管理的Envoy代理。Gateway API定�
    - 针对EnvoyProxy的配置，设定使访问日志被发送到OpenTelemetry后端的设置。
 3. 为EnvoyProxy配置多个访问日志提供程序：
    - 针对EnvoyProxy的配置，设定多个访问日志提供程序的设置。
+
+
+
+**类型设计**
+
+```go
+package envoy_gateway
+
+// ProxyAccessLog
+// EnvoyProxy日志配置
+type ProxyAccessLog struct {
+
+	// 开启/关闭Proxy日志
+	Disable bool `json:"disable,omitempty"`
+
+	// Settings定义Proxy的访问日志设置.
+	// 如果未指定，则将默认格式发送到STDOUT
+	Settings []ProxyAccessLogSetting `json:"settings,omitempty"`
+}
+
+type ProxyAccessLogSetting struct {
+
+	// Format定义access日志格式
+	Format ProxyAccessLogFormat `json:"format"`
+
+	// Sinks定义access日志的sink(接收者)
+	Sinks []ProxyAccessLogSink `json:"sinks"`
+}
+
+// ProxyAccessLogFormatType 日志格式类型配置
+type ProxyAccessLogFormatType string
+
+const (
+
+	// ProxyAccessLogFormatTypeText text日志格式
+	ProxyAccessLogFormatTypeText ProxyAccessLogFormatType = "Text"
+
+	// ProxyAccessLogFormatTypeJSON json日志格式
+	ProxyAccessLogFormatTypeJSON ProxyAccessLogFormatType = "JSON"
+)
+
+// ProxyAccessLogFormat 定义日志格式
+type ProxyAccessLogFormat struct {
+
+	// Type 定义日志格式(json/text)
+	// TODO: 将来会支持mix
+	Type ProxyAccessLogFormatType `json:"type,omitempty"`
+
+	// Text定义了文本access日志格式,遵循Envoy access日志格式
+	// 如果为空置, EnvoyProxy将使用默认的text日志格式
+	// 当Type=text方可配置
+	// 更多日志格式可看doc: https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage#config-access-log-format-strings
+	Text *string `json:"text,omitempty"`
+
+	// JSON是描述特定事件发生的附加属性
+	// 结构化envoy的access日志 更多信息可看doc: https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/access_log/usage#command-operators
+	// 可以用作结构体中字段的值
+	// 当Type=json方可配置
+	JSON map[string]string `json:"json,omitempty"`
+}
+
+// ProxyAccessLogSinkType 日志sink类型配置
+type ProxyAccessLogSinkType string
+
+const (
+	// ProxyAccessLogSinkTypeFile file sink
+	ProxyAccessLogSinkTypeFile ProxyAccessLogSinkType = "File"
+	// ProxyAccessLogSinkTypeOpenTelemetry otel sink
+	ProxyAccessLogSinkTypeOpenTelemetry ProxyAccessLogSinkType = "OpenTelemetry"
+)
+
+// ProxyAccessLogSink 定义日志Sink
+type ProxyAccessLogSink struct {
+
+	// Type 定义access日志sink类型, 目前支持file,otel
+	Type ProxyAccessLogSinkType `json:"type,omitempty"`
+
+	// File file类型日志sink
+	File *FileEnvoyProxyAccessLog `json:"file,omitempty"`
+
+	// OpenTelemetry otel类型日志sink
+	OpenTelemetry *OpenTelemetryEnvoyProxyAccessLog `json:"openTelemetry,omitempty"`
+}
+
+type FileEnvoyProxyAccessLog struct {
+
+	// Path定义了用于公开Envoy access Log的文件路径.(e.g. /dev/stdout)
+	// 空值代表禁用access log
+	Path string `json:"path,omitempty"`
+}
+
+type OpenTelemetryEnvoyProxyAccessLog struct {
+	// Host otel host
+	Host string `json:"host"`
+
+	// Port定义暴露扩展服务的端口
+	// 默认运行在4317
+	Port int32 `json:"port,omitempty"`
+
+	// Resources is a set of labels that describe the source of a log entry, including envoy node info.
+	// Resources是一组描述日志条目来源的labels, 包括Envoy节点信息
+	// 用于描述Envoy的资源语义
+	Resources map[string]string `json:"resources,omitempty"`
+}
+```
+
+
+
+**亿个栗子**
+
+看完上面关于日志的类型设计, 我们可以尝试动手写一下配置
+
+1. 禁用日志输出
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: EnvoyProxy
+   metadata:
+     name: disable-accesslog-1
+     namespace: envoy-gateway-system
+   spec:
+     telemetry:
+       accessLog:
+         disable: true		# 关闭EnvoyProxy的access log
+   ---
+   # 当然你也可以用这种方式关闭日志
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: EnvoyProxy
+   metadata:
+     name: disable-accesslog-2
+     namespace: envoy-gateway-system
+   spec:
+     telemetry:
+       accessLog:
+         settings:
+           - format:
+               type: Text            
+             sinks:
+               - type: File
+                 file:
+                   path: ""
+   
+   ```
+
+   
+
+2. 使用Json日志格式, 同时将日志发往file sink, otel sink
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: EnvoyProxy
+   metadata:
+     name: multi-sinks
+     namespace: envoy-gateway-system
+   spec:
+     telemetry:
+       accessLog:
+         settings:
+           - format:
+               type: JSON
+               # 增加协议和耗时在access log日志上
+               json: 
+                 protocol: %PROTOCOL%
+                 duration: %DURATION%
+             sinks:
+             	# file sink
+               - type: File
+                 file:
+                   path: /dev/stdout
+               # otel sink
+               - type: OpenTelemetry
+                 openTelemetry:
+                   host: otel-collector.monitoring.svc.cluster.local
+                   port: 4317
+                   resources:
+                     k8s.cluster.name: "cluster-dev"
+   
+   ```
+
+
+
+
+
+#### 第二板斧: Metrics
+
+指标是对系统性能和行为的量化测量。它们提供了关于系统运行状况的实时数据，通常包括吞吐量、延迟、错误率等信息。
+
+
+
+Envoy为度量提供了强大的平台，Envoy支持三种不同类型的统计信息：**Counter**, **Gauges**, **Histograms**.
+
+Envoy可以通过`/stats/prometheus`Endpoint，生成Prometheus metrics的输出。
+
+Envoy支持不同类型的数据Sink，但Envoy Gateway仅支持Open Telemetry数据Sink。
+
+Eg metrics:
+
++ 支持以Prometheus方式公开metric数据（重用Probe端口）。
+
++ 支持Open Telemetry统计数据Sink
+
+
+
+**类型定义**
+
+```go
+package envoy_gateway
+
+// ProxyMetrics
+// EnvoyProxy Metrics配置
+type ProxyMetrics struct {
+
+	// Prometheus定义了Admin endpoint为`/stats/prometheus`
+	Prometheus *PrometheusProvider `json:"prometheus,omitempty"`
+
+	// Sinks 定义发送监控指标的sink
+	Sinks []MetricSink `json:"sinks,omitempty"`
+}
+
+// MetricSinkType 指标sink类型
+// 目前仅支持otel
+type MetricSinkType string
+
+const (
+	// MetricSinkTypeOpenTelemetry otel metrics sink
+	MetricSinkTypeOpenTelemetry MetricSinkType = "OpenTelemetry"
+)
+
+// MetricSink
+// 指标sink配置
+type MetricSink struct {
+
+	// Type 定义metrics sink类型。Eg目前只支持OpenTelemetry
+	Type MetricSinkType `json:"type"`
+
+	// OpenTelemetry 定义OpenTelemetry sink的配置.
+	// 当type=OpenTelemetry才可配置
+	OpenTelemetry *OpenTelemetrySink `json:"openTelemetry,omitempty"`
+}
+
+// OpenTelemetrySink 
+// otel sink配置
+type OpenTelemetrySink struct {
+	
+	// Host otel host
+	Host string `json:"host"`
+	
+	// Port otel端口
+	// 默认为4317
+	Port int32 `json:"port,omitempty"`
+
+	// TODO: add support for customizing OpenTelemetry sink in https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/stat_sinks/open_telemetry/v3/open_telemetry.proto#envoy-v3-api-msg-extensions-stat-sinks-open-telemetry-v3-sinkconfig
+}
+
+type PrometheusProvider struct {
+	// Disable 开启/关闭prometheus端点
+	Disable bool `json:"disable,omitempty"`
+}
+```
+
+
+
+**亿个栗子**
+
+看完上面关于指标的类型设计, 我们可以尝试动手写一下配置
+
+1. 禁用Prometheus
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: EnvoyProxy
+   metadata:
+     name: prometheus-disable
+     namespace: envoy-gateway-system
+   spec:
+     telemetry:
+       metrics:
+         prometheus:
+           disable: true		# 禁用Prometheus
+   ```
+
+2. 使用Otel收集指标信息
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: EnvoyProxy
+   metadata:
+     name: otel-sink
+     namespace: envoy-gateway-system
+   spec:
+     telemetry:
+       metrics:
+         sinks:
+           - type: OpenTelemetry
+             # otel collector配置
+             openTelemetry:
+               host: otel-collector.monitoring.svc.cluster.local
+               port: 4317
+   ```
+
+
+
+#### 第三板斧: Trace
+
+链路追踪用于跟踪分布式系统中请求的流向。它允许你了解一个请求从系统中的一个组件到另一个组件的传播路径，以及在这个过程中所经历的各个步骤
+
+
+
+Envoy支持将追踪信息扩展到不同的数据Sink，例如Zipkin、OpenTelemetry等。
+
+目前只能配置OpenTelemetry Sink，您可以使用OpenTelemetry Collector将追踪信息导出到其他追踪后端。
+
+EnvoyProxy可以:
+
++ 支持将追踪信息发送到OpenTelemetry后端 
++ 支持可配置的采样率 
++ 支持从字面值、环境和请求头传播标签
+
+
+
+**类型设计**
+
+```go
+package envoy_proxy
+
+// ProxyTracing
+// EnvoyProxy trace配置
+type ProxyTracing struct {
+
+    // SamplingRate 控制当没有事先做出采样决定的情况下, 设置用于跟踪的流量的速率
+    // 链路采样率[0,100], 默认为100
+    // 100代表100%采样率
+    SamplingRate *uint32 `json:"samplingRate,omitempty"`
+
+    // CustomTags 定义要添加到每个span的自定义标签。
+    // 如果provider是kubernetes，则默认添加pod的name和namespace
+    CustomTags map[string]CustomTag `json:"customTags,omitempty"`
+
+    // Provider定义trace provider
+    // 当前仅支持otel
+    Provider TracingProvider `json:"provider"`
+}
+
+// TracingProviderType trace provider类型
+// 当前仅支持otel
+type TracingProviderType string
+
+const (
+    // TracingProviderTypeOpenTelemetry otel trace provider类型
+    TracingProviderTypeOpenTelemetry TracingProviderType = "OpenTelemetry"
+)
+
+// TracingProvider
+// trace provider配置
+type TracingProvider struct {
+
+    // Type定义trace provider类型
+    // Eg目前只支持OpenTelemetry
+    Type TracingProviderType `json:"type"`
+
+    // Host 定义provider host
+    Host string `json:"host"`
+
+    // Port 定义provider port
+    // 默认为4317
+    Port int32 `json:"port,omitempty"`
+}
+
+// CustomTagType 自定义tag类型
+type CustomTagType string
+
+const (
+    // CustomTagTypeLiteral 为每个span添加硬编码字面量的tag
+    CustomTagTypeLiteral CustomTagType = "Literal"
+
+    // CustomTagTypeEnvironment 将环境变量的值作为tag添加到每个span
+    CustomTagTypeEnvironment CustomTagType = "Environment"
+
+    // CustomTagTypeRequestHeader 将request header的值作为tag添加到每个span
+    CustomTagTypeRequestHeader CustomTagType = "RequestHeader"
+)
+
+// CustomTag
+// 自定义tag
+type CustomTag struct {
+
+    // Type 自定义tag类型
+    // 默认为Literal
+    Type CustomTagType `json:"type"`
+
+    // Literal为每个span添加硬编码的tag值。
+    // 当Type=literal时需要配置
+    Literal *LiteralCustomTag `json:"literal,omitempty"`
+
+    // Environment 将环境变量的值添加到每个跨度
+    // 当Type=environment时需要配置
+    Environment *EnvironmentCustomTag `json:"environment,omitempty"`
+
+    // RequestHeader 将请求头的值添加到每个span
+    // 当Type=requestHeader时需要配置
+    RequestHeader *RequestHeaderCustomTag `json:"requestHeader,omitempty"`
+
+    // TODO: 将来会支持metadata tag(e.g. 集群信息, 路由信息...)
+}
+
+// LiteralCustomTag 为每个span添加硬编码的值
+type LiteralCustomTag struct {
+
+    // Value 定义了要添加到每个span中的硬编码值
+    Value string `json:"value"`
+}
+
+// EnvironmentCustomTag 将环境变量的值添加到每个span
+type EnvironmentCustomTag struct {
+
+    // Name 定义要从中提取值的环境变量的名称
+    Name string `json:"name"`
+
+    // DefaultValue 定义当环境变量不存在时使用的默认值
+    // 可选
+    DefaultValue *string `json:"defaultValue,omitempty"`
+}
+
+// RequestHeaderCustomTag 将请求头的值设置到每个span
+type RequestHeaderCustomTag struct {
+
+    // Name 定义了要从中提取值的请求头的名称
+    Name string `json:"name"`
+
+    // DefaultValue 定义请求头未设置时使用的默认值
+    // 可选
+    DefaultValue *string `json:"defaultValue,omitempty"`
+}
+```
+
+
+
+**亿个栗子**
+
+看完上面关于链路的类型设计, 我们可以尝试动手写一下配置
+
+1. 将链路采样率设置为10%
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: EnvoyProxy
+   metadata:
+     name: tracing-sample-rate
+     namespace: envoy-gateway-system
+   spec:
+     telemetry:
+       tracing:
+         samplingRate: 10
+         provider:
+           host: otel-collector.monitoring.svc.cluster.local
+           port: 4317
+   ```
+
+2. 设置自定义tag
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: EnvoyProxy
+   metadata:
+     name: tracing
+     namespace: envoy-gateway-system
+   spec:
+     telemetry:
+       tracing:
+         samplingRate: 100
+         provider:
+           host: otel-collector.monitoring.svc.cluster.local
+           port: 4317
+         customTags:
+           key1:
+             type: cluster
+             literal:
+               value: "dev-1"
+           env1:
+             type: Environment
+             environment:
+               name: Host
+               defaultValue: "127.0.0.1"
+           header1:
+             type: RequestHeader
+             requestHeader:
+               name: X-Mirror-Route
+               defaultValue: "false"
+   ```
+
+   
