@@ -660,7 +660,7 @@ spec:
 
 我们可以通过`$ kubectl get cm envoy-gateway-config -n envoy-gateway-system -o yaml`查看EnvoyGateway的配置.
 
-> 由于 EnvoyGateway 不显示状态，因此 EnvoyGatewaySpec 是内联的
+> 由于 EnvoyGateway 不显示状态，因此 EnvoyGatewaySpec是内联的, 其内联在`ConfigMap=envoy-gateway-config`中
 
 
 
@@ -1258,4 +1258,123 @@ type RequestHeaderCustomTag struct {
                defaultValue: "false"
    ```
 
-   
+
+
+
+
+
+### TODO: Envoy Gateway Extension
+
+
+
+
+
+### Envoy Patch Policy
+
+在有些情况下, 我们可能对数据面的EnvoyProxy中xDS配置有自定义的需求, 那么我们可以使用JSONPatch方式进行配置.
+
+这一设计引入了EnvoyPatchPolicy API，允许用户在Envoy Gateway生成的Envoy xDS配置发送到Envoy Proxy<u>之前</u>进行修改。Envoy Gateway允许用户使用上游Gateway API配置网络和安全意图，同时使用该项目中定义的实现特定的Extension API，以为应用程序开发人员提供更完整的体验。这些API是底层Envoy xDS API的抽象版本，为应用程序开发人员提供更好的用户体验，仅暴露和设置特定功能的子集，有时以一种主观的方式（例如RateLimit）。
+
+这些API并未暴露Envoy的所有功能和能力，原因可能是这些功能是期望的，但API尚未定义，或者项目无法支持如此庞大的功能列表。为了缓解这个问题，并为那些精通Envoy xDS API及其功能的高级用户提供临时解决方案，引入了这个API.
+
+**EnvoyPatchPolicy其实就是一个API，允许用户修改生成的xDS配置**
+
+编写patch策略后，我们可以利用`egctl x translate`确保可以成功应用EnvoyPatchPolicy并生成期望的输出 xDS.当运行时, 我们可以查看EnvoyPatchPolicy中的Status字段，突出显示补丁是否成功应用.
+
+
+
+该API只支持单个targetRef，并且只能绑定到一个Gateway资源。这简化了关于补丁如何工作的推理。
+
+:warning:: 该API将始终是一个实验性API，不能升级为稳定的API，因为Envoy Gateway无法保证：
+
+- 生成的资源名称的命名方案在不同版本之间不会改变
+- 底层 Envoy Proxy API在不同版本之间不会发生变化
+
+需要使用EnvoyGateway API明确启用此API
+
+> Bootstrap和Patch Policy功能类似但是粒度不相同, 前者粒度是所有新创建的EnvoyProxy, 后者粒度是某个EnvoyProxy. 我们需要根据业务, 粒度去进行选择合适的配置.
+
+
+
+**一个栗子**:
+
+我们可以对EnvoyProxy增加一个速率限制配置:
+
+```yaml
+# EnvoyPatchPolicy配置
+# 旨在对xDS进行更精细的配置
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: ratelimit-patch-policy
+  namespace: default
+spec:
+  # 需要配置的目标Gateway(EnvoyProxy)
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: eg
+    namespace: default
+  # JSONPatch类型
+  type: JSONPatch
+  jsonPatches:
+    # 对Listener进行补丁操作
+    # type代表Envoy xDS资源的URL
+    - type: "type.googleapis.com/envoy.config.listener.v3.Listener"
+      # listener名字遵循: "<GatewayNamespace>/<GatewayName>/<GatewayListenerName>"格式
+      name: default/eg/http
+      # json operation
+      operation:
+        op: add
+        # path是在Envoy xDS资源URL下开始
+        path: "/default_filter_chain/filters/0/typed_config/http_filters/0"
+        value:
+          name: "envoy.filters.http.ratelimit"
+          typed_config:
+            "@type": "type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit"
+            domain: "eag-ratelimit"
+            failure_mode_deny: true
+            timeout: 1s
+            rate_limit_service:
+              grpc_service:
+                envoy_grpc:
+                  cluster_name: rate-limit-cluster
+              transport_api_version: V3
+    # 对Router进行补丁操作
+    # type代表Envoy xDS资源的URL
+    - type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+      # router名字遵循: "<GatewayNamespace>/<GatewayName>/<GatewayListenerName>"格式
+      name: default/eg/http
+      operation:
+        op: add
+        path: "/virtual_hosts/0/rate_limits"
+        value:
+          - actions:
+              - remote_address: { }
+    # 对cluster进行补丁操作
+    # type代表Envoy xDS资源的UR
+    - type: "type.googleapis.com/envoy.config.cluster.v3.Cluster"
+      name: rate-limit-cluster
+      # 新增一个上游集群
+      operation:
+        op: add
+        path: ""
+        value:
+          name: rate-limit-cluster
+          type: STRICT_DNS
+          connect_timeout: 10s
+          lb_policy: ROUND_ROBIN
+          http2_protocol_options: { }
+          load_assignment:
+            cluster_name: rate-limit-cluster
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: ratelimit.svc.cluster.local
+                          port_value: 8081
+```
+
+
+
