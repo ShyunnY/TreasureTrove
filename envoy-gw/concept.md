@@ -1378,3 +1378,405 @@ spec:
 
 
 
+
+
+### Rate Limit
+
+RateLimit是一种功能，允许用户基于流量流中的属性限制传入请求的数量到预定义的值。
+
+以下是用户可能希望实施速率限制的一些原因：
+
+1. 防止恶意活动，如DDoS攻击。
+2. 防止应用程序及其资源（如数据库）过载。
+3. 基于用户权限创建API限制
+
+
+
+**作用范围**
+
+全局: 在这种情况下，速率限制是在应用它的<u>所有</u>Envoy代理实例中***共享***的，即如果数据平面有2个运行中的Envoy副本，速率限制为每秒10个请求，这个限制是通用的，如果在同一秒内有5个请求通过第一个副本，而另外5个请求通过第二个副本，这个限制将被触发。
+
+本地: 在这种情况下，速率限制是针对<u>每个</u>Envoy实例/副本特定的。注意: 这不是初始设计的一部分，将作为将来的增强功能添加
+
+
+
+**设计思想**
+
+初始设计使用扩展过滤器（Extension filter）在特定的HTTPRoute上应用速率限制功能。这相对于PolicyAttachment扩展机制更受欢迎，因为目前尚不清楚速率限制是否需要由平台管理员强制执行或覆盖。
+
+RateLimitFilter只能作为一个<u>过滤器(Filter)</u>应用于HTTPRouteRule，跨HTTPRoute中的所有后端进行应用，而不能作为一个针对特定后端的HTTPBackendRef中的过滤器进行应用。
+
+HTTPRoute API在每个规则中都有一个matches字段，用于选择要路由到目标后端的特定流量流。可以通过extensionRef过滤器将RateLimitFilter API附加HTTPRoute.每个Rule中还有一个clientSelectors字段，用于选择流量流中的属性，以对特定客户端进行速率限制。这两个级别的Selector/Match提供了灵活性，并旨在保留与其使用相关的匹配信息，允许每个配置的作者/所有者不同。它还允许在未来增强RateLimitFilter中的clientSelectors字段，以包括HTTPRoute API中不相关的其他可匹配属性，例如IP子网.
+
+
+
+**如何实现?**
+
+全局速率限制在Envoy代理中可以通过以下步骤实现：
+
+1. 可以为每个xDSRoute配置操作。
+2. 如果在这些操作中定义的匹配条件符合特定的HTTP请求，则将在上述操作中(xDS Route)定义的一组键值对（称为描述符）发送到远程速率限制服务。速率限制服务的配置（例如速率限制服务的URL）是使用速率限制过滤器定义的。
+3. 基于速率限制服务接收到的信息及其预先配置的配置，计算是否对HTTP请求进行速率限制，然后将该决策发送回Envoy，<u>Envoy在数据平面</u>上执行此决策。
+
+
+
+Envoy Gateway将通过以下方式利用Envoy代理的这一功能：
+
+1. 将用户界面的RateLimitFilter API转换为速率限制操作以及速率限制服务配置，以实现所需的API意图。
+2. Envoy Gateway将使用速率限制服务的现有参考实现。
+3. 基础设施管理员将需要通过在EnvoyGateway配置API中定义的新设置启用速率限制服务。
+4. xDS IR将被增强以保留用户界面的速率限制意图。
+5. xDS Translator将被增强以将xDS IR中的速率限制字段转换为速率限制操作，并实例化速率限制过滤器。
+6. 将添加一个名为`Rate-Limit`的新运行组件，该程序订阅xDS IR消息并将其转换为新的速率限制Infra IR，其中包含速率限制服务配置以及部署速率限制服务所需的其他信息。
+7. 基础设施服务将被增强以订阅速率限制Infra IR，并部署一个特定于提供程序的速率限制服务可运行实体。
+8. 将在RateLimitFilter API中添加一个Status字段，以反映特定配置是否在这些多个位置中正确配置
+
+> 综上所述, 我们可知: RateLimit是在xDS中的rDS上对Router进行配置.  当用户/管理员配置了RateLimitFilter API后, 控制平面将会通过Translator将其转换为InfraIR, Rate-Limit组件会接收其信息并将其传递给xDS服务进行处理.
+
+
+
+**亿个栗子**
+
+速率限制规则是在`BackendTrafficPolicy`Kubernetes资源上进行配置.
+
+1. 我们想对`/foo`前缀路径上的HTTP Request Header为`X-User-Token=abc`进行速率控制
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: BackendTrafficPolicy
+   metadata:
+     name: ratelimit-specific-user
+   spec:
+     # 将其作用到指定的HTTPRouter上
+     targetRef:
+       group: gateway.networking.k8s.io
+       kind: HTTPRoute
+       name: example
+     rateLimit:
+       # 全局类型, 所有EnvoyProxy实例都将共享该limit限制
+       type: Global
+       global:
+         rules:
+           - clientSelectors:
+               # 使用http request 作为限制规则
+               - headers:
+                   - name: X-User-Token
+                     value: abc
+             limit:
+               requests: 10
+               unit: Hour
+   ---
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: HTTPRoute
+   metadata:
+     name: example
+   spec:
+     parentRefs:
+       - name: eg
+     hostnames:
+       - www.example.com
+     rules:
+       - matches:
+           - path:
+               type: PathPrefix
+               value: /foo
+         # 指定拓展的filter
+         filters:
+           - type: ExtensionRef
+             extensionRef:
+               group: gateway.envoyproxy.io
+               kind: RateLimitFilter
+               name: ratelimit-specific-user
+         backendRefs:
+           - name: backend
+             port: 3000
+   ```
+
+2. 我们想对`/foo`前缀路径上的所有流量都进行速率控制
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: BackendTrafficPolicy
+   metadata:
+     name: ratelimit-all-requests
+   spec:
+     targetRef:
+       group: gateway.networking.k8s.io
+       kind: HTTPRoute
+       name: example
+     rateLimit:
+       type: Global
+       global:
+         rules:
+         - limit:
+             requests: 1000
+             unit: Second
+   ---
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: HTTPRoute
+   metadata:
+     name: example
+   spec:
+     parentRefs:
+     - name: eg
+     hostnames:
+     - www.example.com
+     rules:
+     - matches:
+       - path:
+           type: PathPrefix
+           value: /foo
+       filters:
+       - type: ExtensionRef
+         extensionRef:
+           group: gateway.envoyproxy.io
+           kind: RateLimitFilter
+           name: ratelimit-all-requests	# 对应BackendTrafficPolicy的name
+       backendRefs:
+       - name: backend
+         port: 3000
+   ```
+
+3. 我们想对`/foo`前缀路径上的HTTP Request Header为`X-User-Token`的<u>每个值</u>进行速率控制
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: BackendTrafficPolicy
+   metadata:
+     name: ratelimit-per-user
+   spec:
+     targetRef:
+       group: gateway.networking.k8s.io
+       kind: HTTPRoute
+       name: example
+     rateLimit:
+       type: Global
+       global:
+         rules:
+         - clientSelectors:
+           - headers:
+           	# 将type配置成Distinct
+           	# X-User-Token=a或X-User-Token=b的请求每小时都只能有10个请求通过
+             - type: Distinct
+               name: X-User-Token
+           limit:
+             requests: 10
+             unit: Hour
+   ---
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: HTTPRoute
+   metadata:
+     name: example
+   spec:
+     parentRefs:
+     - name: eg
+     hostnames:
+     - www.example.com
+     rules:
+     - matches:
+       - path:
+           type: PathPrefix
+           value: /foo
+       filters:
+       - type: ExtensionRef
+         extensionRef:
+           group: gateway.envoyproxy.io
+           kind: RateLimitFilter
+           name: ratelimit-per-user 
+       backendRefs:
+       - name: backend
+         port: 3000
+   ```
+
+4. 当然, 我们也许想要控制某个网段的请求速率
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: BackendTrafficPolicy
+   metadata:
+     name: ratelimit-per-ip
+   spec:
+     targetRef:
+       group: gateway.networking.k8s.io
+       kind: HTTPRoute
+       name: example
+     rateLimit:
+       type: Global
+       global:
+         rules:
+         - clientSelectors:
+         	  # 对192.168.136.0/24下的网段进行速率配置, 只允许每小时10个请求通过
+           - sourceIP: 192.168.136.0/24
+           limit:
+             requests: 10
+             unit: Hour
+   ---
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: HTTPRoute
+   metadata:
+     name: example
+   spec:
+     parentRefs:
+     - name: eg
+     hostnames:
+     - www.example.com
+     rules:
+     - matches:
+       - path:
+           type: PathPrefix
+           value: /foo
+       filters:
+       - type: ExtensionRef
+         extensionRef:
+           group: gateway.envoyproxy.io
+           kind: RateLimitFilter
+           name: ratelimit-per-user 
+       backendRefs:
+       - name: backend
+         port: 3000
+   ```
+
+5. Jwt在认证上用的很广泛, 我们当然也可以通过Jwt信息进行速率控制. 我们对claim中`name=shyunn`的Jwt进行速率控制
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: SecurityPolicy
+   metadata:
+     name: jwt-example
+   spec:
+     targetRef:
+       group: gateway.networking.k8s.io
+       kind: HTTPRoute
+       name: example
+     jwt:
+       providers:
+         - name: example
+         	# 配置JWKs进行解析
+           remoteJWKS:
+             uri: https://raw.githubusercontent.com/envoyproxy/gateway/main/examples/kubernetes/jwt/jwks.json
+           # 将Jwt中的claim设置到Header中, 供后续RateLimit策略进行匹配
+           claimToHeaders:
+           - claim: name
+             header: custom-request-header
+   ---
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: BackendTrafficPolicy
+   metadata:
+     name: ratelimit-specific-user
+   spec:
+     targetRef:
+       group: gateway.networking.k8s.io
+       kind: HTTPRoute
+       name: example
+     rateLimit:
+       type: Global
+       global:
+         rules:
+         - clientSelectors:
+         	  # custom-request-header的值实际上是使用JWKs对Jwt验证后拿到的claim值
+           - headers:
+             - name: custom-request-header
+               value: shyunn
+           limit:
+             requests: 10
+             unit: Hour
+   ---
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: HTTPRoute
+   metadata:
+     name: example
+   spec:
+     parentRefs:
+     - name: eg
+     hostnames:
+     - "www.example.com"
+     rules:
+     - backendRefs:
+       - group: ""
+         kind: Service
+         name: backend
+         port: 3000
+         weight: 1
+       matches:
+       - path:
+           type: PathPrefix
+           value: /foo
+   ```
+
+6. 我们还可以同时配置多个RateLimit配置. 用户可以创建多个RateLimitFilters并将其应用于相同的HTTPRoute。在这种情况下，每个RateLimitFilter将以相互独立的方式应用于路由，并在<u>条件互相独立</u>的情况下进行匹配（和限制）。当客户端选择器（clientSelectors）下的所有条件都为真时，**将为每个RateLimitFilter规则应用速率限制**.
+
+   当请求`x-user-id=foo`发送了90个请求, 匹配ratelimit-per-user BackendTrafficPolicy, 此时请求`x-user-id=bar`发送11个请求, 第11个请求将会被限制.
+
+   ```yaml
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: BackendTrafficPolicy
+   metadata:
+     name: ratelimit-all-safeguard-app
+   spec:
+     targetRef:
+       group: gateway.networking.k8s.io
+       kind: HTTPRoute
+       name: example
+     rateLimit:
+       type: Global
+       global:
+         # 只有一条规则: 每小时仅允许100个请求通过
+         rules:
+           - limit:
+               requests: 100
+               unit: Hour
+   ---
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: BackendTrafficPolicy
+   metadata:
+     name: ratelimit-per-user
+   spec:
+     targetRef:
+       group: gateway.networking.k8s.io
+       kind: HTTPRoute
+       name: example
+     rateLimit:
+       type: Global
+       global:
+         # 只有一条规则: 每个x-user-id值每小时只允许100个请求通过
+         rules:
+           - clientSelectors:
+               - headers:
+                   - type: Distinct
+                     name: x-user-id
+             limit:
+               requests: 100
+               unit: Hour
+   ---
+   apiVersion: gateway.networking.k8s.io/v1beta1
+   kind: HTTPRoute
+   metadata:
+     name: example
+   spec:
+     parentRefs:
+       - name: eg
+     hostnames:
+       - www.example.com
+     rules:
+       - matches:
+           - path:
+               type: PathPrefix
+               value: /foo
+         filters:
+             ## 配置2个rateLimitFilter
+           - type: ExtensionRef
+             extensionRef:
+               group: gateway.envoyproxy.io
+               kind: RateLimitFilter
+               name: ratelimit-per-user
+           - type: ExtensionRef
+             extensionRef:
+               group: gateway.envoyproxy.io
+               kind: RateLimitFilter
+               name: ratelimit-all-safeguard-app
+         backendRefs:
+           - name: backend
+             port: 3000
+   ```
+
+   
