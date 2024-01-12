@@ -1780,3 +1780,85 @@ Envoy Gateway将通过以下方式利用Envoy代理的这一功能：
    ```
 
    
+
+
+
+### Security Policy
+
+`SecurityPolicy`API允许系统管理员为进入网关的流量配置<u>身份验证</u>和<u>授权策略</u>
+
+
+
+**feature-api**
+
+以下是可以包含在此API中的功能列表：
+
+1. 基于JWT的身份验证
+2. OIDC身份验证
+3. 外部授权
+4. 基本身份验证
+5. API密钥身份验证
+6. 跨域资源共享（CORS）
+
+
+
+**设计**
+
++ 该API将仅支持单个targetRef，并且可以绑定到<u>Gateway</u>资源、<u>HTTPRoute</u>或<u>GRPCRoute</u>。该API资源必须属于与targetRef资源*相同*的命名空间。
+
++ 针对特定targetRef（例如，在Gateway的某个Listener部分），只能附加一个策略资源。如果策略针对资源但无法附加到它，应在Policy Status字段中使用Conflicted=True条件反映此信息。
+
++ 如果多个策略针对相同资源，将附加到Gateway的Listeners的将是最旧的资源（基于创建时间戳），其他资源将不会被附加。
+
++ 在最具体范围上的策略胜过对较不具体范围的策略。即，针对xRoute（HTTPRoute或GRPCRoute）的策略胜过针对此路由的parentRef的Listener的策略，进而胜过针对Gateway的listener/section所属的策略。
+
+
+
+
+
+**一个栗子**
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: backend
+  namespace: default
+spec:
+  parentRefs:
+    - name: eg
+  hostnames:
+    - "www.example.com"
+  rules:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: backend
+          port: 3000
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy		# 声明安全策略
+metadata:
+  name: jwt-authn-policy
+  namespace: default
+spec:
+  # 配置jwt验证策略
+  jwt:
+    providers:
+    - name: example
+      # 配置Jwks
+      remoteJWKS:
+        uri: https://raw.githubusercontent.com/envoyproxy/gateway/main/examples/kubernetes/jwt/jwks.json
+  # 将安全策略作用到指定网关上
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: eg
+    namespace: default
+```
+
