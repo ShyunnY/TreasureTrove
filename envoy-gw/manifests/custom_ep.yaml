@@ -1,0 +1,87 @@
+# 自定义配置EnvoyProxy
+# Envoy Gateway提供了一个名为EnvoyProxy的自定义资源定义（CRD）,可与GatewayClass中的ParametersRef关联,
+# 使得集群管理员能够自定义托管的EnvoyProxy部署和服务。
+
+# 要使EnvoyProxy配置生效, 首先需要在GatewayClass中配置ParametersRef
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: proxy-config
+    namespace: envoy-gateway-system
+---
+# EnvoyProxy Api配置
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: custom-proxy-config
+  namespace: envoy-gateway-system
+spec:
+  # logging,telemetry,bootstrap相关配置在concept概念md中已经进行讲解, 这里就不进行赘述了.
+  logging:
+  telemetry:
+  bootstrap:
+
+  # concurrency定义了要运行的工作线程的数量. 如果未设置,则默认为平台上的cpuset线程数
+  concurrency:
+  # MergeGateways定义了是否应该将Gateway资源合并到同一EnvoyProxy基础设施上.
+  # 将此字段设置为true将合并父Gateway Class下的所有Gateway监听器. 
+  # 这意味着每个监听器的端口、协议和主机名元组必须是唯一的。如果检测到重复的监听器，新的监听器（基于时间戳）将被拒绝,其状态将更新为“Accepted=False”的条件.
+  mergeGateways:
+
+  # provider定义所需的资源提供者和提供者特定的配置。如果未指定，则使用"Kubernetes" Provider和默认配置参数
+  provider:
+    # Provider类型, 目前仅支持Kubernetes和file, 默认为Kubernetes
+    type: Kubernetes
+    # 当Provider=Kubernetes时, Kubernetes相关配置
+    kubernetes:
+      # EnvoyProxy Deploy相关配置
+      envoyDeployment:
+        # EnvoyProxy Pod自定义注释设置
+        pod:
+          annotations:
+            shyunn.io/ep: "dev"
+          # 自定义容器卷
+          volumes:
+          - name: certs
+            secret:
+              secretName: envoy-cert
+        # EnvoyProxy容器设置
+        container:
+          # EnvoyProxy环境变量配置
+          env:
+          - name: AUTHOR
+            value: shyunn
+          # EnvoyProxy容器资源配置
+          resources:
+            requests:
+              cpu: 150m
+              memory: 640Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          # EnvoyProxy镜像配置
+          image: envoyproxy/envoy:v1.28
+          # volume卷挂载设置
+          volumeMounts:
+          - mountPath: /certs
+            name: certs
+            readOnly: true
+        # 副本数量
+        replicas: 2
+        # EnvoyProxy Service配置
+        envoyService:
+          annotations:
+            shyunn.io/ep-service: "dev"
+          # 服务类型
+          type: LoadBalancer
+          # 指定LoadBalancerClass类型
+          # loadBalancerClass:
+
+          # 是否为 LoadBalancer 类型的服务分配 NodePort, 默认为true
+          # allocateLoadBalancerNodePorts

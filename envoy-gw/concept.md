@@ -238,8 +238,6 @@ Gateway API Translator负责在**将Gateway API资源转换为IR并通过消息�
 
 为了在Translator过程中存储、访问和操作信息，使用了一组上下文结构体。这些结构体包装了特定的Gateway API类型，并添加了额外的字段和方法以支持处理.
 
-
-
 `GatewayContext`
 
 ```go
@@ -1862,3 +1860,209 @@ spec:
     namespace: default
 ```
 
+
+
+
+
+### Tcp And Udp Design
+
+尽管Envoy Gateway大多数用例都在第**7**层，但它也可以在第**4**层工作，代理TCP和UDP流量. 本文将探讨在第4层操作Envoy Gateway时的选项，并解释设计决策。
+
+Envoy可以作为TCP和UDP的非透明代理或透明代理工作，因此理论上，Envoy Gateway也应能在这两种模式下运行:
+
+**非透明代理模式** 
+
+对于TCP，Envoy终止下游连接，使用自己的IP地址连接上游，并将TCP流量从下游代理到上游。
+
+对于UDP，Envoy从下游接收UDP数据包，并在将UDP数据包代理到上游时使用自己的IP地址作为发送方IP地址。
+
+在这种模式下，上游将看到Envoy的*IP地址和端口*
+
+**透明代理模式** 
+
+对于TCP，Envoy终止下游连接，使用下游的IP地址连接上游，并将TCP流量从下游代理到上游。
+
+对于UDP，Envoy从下游接收UDP数据包，并在将UDP数据包代理到上游时使用下游的IP地址作为发送方IP地址。
+
+在这种模式下，上游将看到原始下游的IP地址和Envoy的MAC地址。
+
+注意：即使在透明模式下，上游也无法看到下游的端口号，因为Envoy<u>不会转发端口号</u>。
+
+
+
+当前实现仅支持非透明模式的代理，即后端将看到部署的Envoy实例的源IP和端口，而不是客户端的信息。
+
+
+
+
+
+### QuickStart
+
+接下来我们尝试部署一个入门程序, 体验EnvoyGateway如何使用.
+
+1. 首先准备一个应用和Service
+
+   ```yaml
+   apiVersion: v1
+   kind: ServiceAccount
+   metadata:
+     name: backend
+   ---  
+   apiVersion: apps/v1
+   kind: Deployment
+   metadata:
+     name: backend
+   spec:
+     replicas: 1
+     selector:
+       matchLabels:
+         app: backend
+         version: v1
+     template:
+       metadata:
+         labels:
+           app: backend
+           version: v1
+       spec:
+         serviceAccountName: backend
+         containers:
+           - image: anjia0532/k8s-staging-ingressconformance.echoserver:v20221109-7ee2f3e
+             imagePullPolicy: IfNotPresent
+             name: backend
+             ports:
+               - containerPort: 3000
+             env:
+               - name: POD_NAME
+                 valueFrom:
+                   fieldRef:
+                     fieldPath: metadata.name
+               - name: NAMESPACE
+                 valueFrom:
+                   fieldRef:
+                     fieldPath: metadata.namespace
+   ---
+   apiVersion: v1
+   kind: Service
+   metadata:
+     name: backend
+     labels:
+       app: backend
+       service: backend
+   spec:
+     ports:
+       - name: http
+         port: 3000
+         targetPort: 3000
+     selector:
+       app: backend
+   ```
+
+2. 配置GatewayClass以及Gateway
+
+   ```yaml
+   # GatewayClass配置, 可以理解为一个模板配置
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: GatewayClass
+   metadata:
+     name: eg
+   spec:
+     # 管理此网关的控制器名称
+     controllerName: gateway.envoyproxy.io/gatewayclass-controller
+     # 用于引用ConfigMap或者自定义资源进行配置Gateway
+     # parametersRef:
+   ---
+   # 网关代表通过将监听器绑定到一组IP地址的服务流量处理基础设施的实例
+   # Gateway配置(可以理解为类实例化的对象)
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: Gateway
+   metadata:
+     name: eg-gw
+   spec:
+     # gatewayClass资源名称
+     gatewayClassName: eg
+     # 配置listeners(代表希望监听哪个端口)
+     listeners:
+       - name: http
+         protocol: HTTP
+         port: 80
+   ```
+
+3. 配置HTTP Route
+
+   ```yaml
+   # HTTP Router站在开发者角度考虑, 流量将如何匹配进来,hosts是什么,匹配规则是什么,流量后端是什么.
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: HTTPRoute
+   metadata:
+     name: backend
+   spec:
+     # 引用的父gateway(换句话说: 希望在哪个gateway上执行以下规则)
+     parentRefs:
+       - name: eg-gw
+     # 匹配host=www.hello.com
+     hostnames:
+       - "www.hello.com"
+     # 定义规则
+     rules:
+         # 引用的K8s Service
+         # backend后端配置
+       - backendRefs:
+           - group: ""
+             kind: Service
+             name: backend
+             port: 3000
+             weight: 1
+         # 匹配规则
+         matches:
+           - path:
+               # 前缀匹配
+               type: PathPrefix
+               value: /
+   ```
+
+4. 访问测试
+
+   ```shell
+   # 由于这里我使用了MetalLB, 故直接通过IP进行访问, 如果没有使用MetalLB, 那进行端口转发即可.
+   # ip为192.168.136.100
+   $ kubectl get svc --selector gateway.envoyproxy.io/owning-gateway-name=eg-gw -n envoy-gateway-system 
+   
+   $ curl 192.168.136.100:80 -H "Host: www.hello.com"
+   {
+    "path": "/",
+    "host": "www.hello.com",
+    "method": "GET",
+    "proto": "HTTP/1.1",
+    "headers": {
+     "Accept": [
+      "*/*"
+     ],
+     "User-Agent": [
+      "curl/7.29.0"
+     ],
+     "X-Envoy-Expected-Rq-Timeout-Ms": [
+      "15000"
+     ],
+     "X-Envoy-Internal": [
+      "true"
+     ],
+     "X-Forwarded-For": [
+      "172.16.219.64"
+     ],
+     "X-Forwarded-Proto": [
+      "http"
+     ],
+     "X-Request-Id": [
+      "c7b59c34-4a3f-424a-9204-a435eeb9c835"
+     ]
+    },
+    "namespace": "default",
+    "ingress": "",
+    "service": "",
+    "pod": "backend-564dd758c5-znd8t"
+   }
+   ```
+
+
+
+至此我们已经学习完了关于Eg概念部分内容, 接下来我们进行Eg不同配置相关的学习.

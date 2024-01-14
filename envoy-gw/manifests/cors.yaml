@@ -1,0 +1,57 @@
+# cors跨域配置
+# 跨域（Cross-Origin）指的是在web开发中，通过浏览器访问一个网页时，
+# 该网页尝试请求另一个域（域名、协议或端口不同）下的资源。
+# 由于浏览器的同源策略（Same-Origin Policy），
+# 默认情况下，JavaScript 在一个域中的页面无法直接访问另一个域中的数据或执行对应域的操作
+# 我们可以看一下
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: cors-example
+spec:
+  # 将其作用到Gateway或者Route上, 这里配置作用到指定的Route上
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: backend
+  # cors配置
+  cors:
+    # AllowOrigins 定义允许发出请求的源
+    allowOrigins:
+    - type: Exact
+      value: "www.baidu.com"
+    # AllowMethods 定义允许发出请求的方法
+    allowMethods:
+    - GET
+    - POST
+    # AllowMethods 定义允许发出请求的方法
+    allowHeaders:
+    - "x-header-1"
+    - "x-header-2"
+    # ExposeHeaders 定义可以在响应中公开的标头
+    exposeHeaders:
+    - "x-header-3"
+    - "x-header-4"
+---
+# 我们可以通过以下curl工具进行测试   
+
+# 跨域访问成功
+# $ curl 192.168.136.100:80 -H "Origin: http://www.baidu.com" -H "Host: www.hello.com" -H "Access-Control-Request-Method: GET" -X OPTIONS -I
+# HTTP/1.1 200 OK
+# access-control-allow-origin: http://www.baidu.com
+# access-control-allow-methods: GET, POST
+# access-control-allow-headers: x-header-1, x-header-2
+# access-control-expose-headers: x-header-3, x-header-4
+# date: Sun, 14 Jan 2024 08:21:35 GMT
+# server: envoy
+# content-length: 0
+
+# 跨域访问失败
+# $ curl $GATEWAY_IP -H "Origin: http://www.baidu1.com" -H "Host: www.hello.com" -H "Access-Control-Request-Method: GET" -X OPTIONS -I
+# HTTP/1.1 200 OK
+# content-type: application/json
+# x-content-type-options: nosniff
+# date: Sun, 14 Jan 2024 08:21:30 GMT
+# content-length: 642
+# x-envoy-upstream-service-time: 1
+# server: envoy
