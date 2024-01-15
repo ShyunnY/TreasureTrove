@@ -1,0 +1,44 @@
+# HTTPURLRewriteFilter定义了在转发期间修改请求的过滤器
+# 在一个Route规则上最多只能使用一个这样的过滤器
+# 在同一Route规则上不得与HTTP Request Redirect过滤器一起使用
+
+# ⭐: 当对路径进行重写后, EnvoyProxy会添加一个"X-Envoy-Original-Path"请求头, 值为重写前的原始请求地址
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-filter-url-rewrite
+spec:
+  parentRefs:
+    - name: eg
+  # 匹配Host: path.rewrite.example
+  hostnames:
+    - path.rewrite.example
+  rules:
+    - matches:
+      - path:
+          # 前缀匹配'/get'请求
+          type: PathPrefix
+          value: "/get"
+      filters:
+      - type: URLRewrite  # url重写filter
+        urlRewrite:
+          path:
+            # 前缀路径匹配都将被替换值替换
+            # 例: /get/xxx -> /replace/xxx
+            type: ReplacePrefixMatch
+            replacePrefixMatch: /replace
+      - type: URLRewrite  # url重写filter
+        urlRewrite:
+          path:
+            # 请求路径被完全替换
+            # 例: /get/origin/path/xxxx -> /force/replace/fullpath
+            type: ReplaceFullPath
+            replaceFullPath: /force/replace/fullpath
+      - type: URLRewrite
+        urlRewrite:
+          # Hostname 是在转发期间用于替换Host header的值
+          # ⭐: 当重写了Host请求头的信息后, EnvoyProxy会添加一个"X-Forwarded-Host"请求头, 该请求头值为原始Host的值
+          hostname: "envoygateway.io"
+      backendRefs:
+      - name: backend
+        port: 3000

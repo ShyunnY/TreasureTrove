@@ -1,0 +1,20 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg-gw
+spec:
+  gatewayClassName: eg
+  # 此网关请求的地址。这是可选的，其行为可能依赖于实现。如果在spec中设置了值并且请求的地址无效或不可用
+  # 则实现必须在GatewayStatus.Addresses的相关条目中指示此情况。
+  # Addresses字段表示对“网关外部”的地址（流向此网关的流量将使用的地址）的请求。
+  # 这可以是外部负载均衡器或其他网络基础设施的IP地址或主机名，或者流量将被发送到的其他地址。
+  # 如果未指定地址，则实现可以以特定于实现的方式调度网关，并分配适当的ipset。
+  # 实现必须将所有侦听器绑定到分配给网关的每个GatewayAddress，并在GatewayStatus.Addresses中添加相应的条目。
+  addresses:
+    # 可选: Hostname,IPAddress,NamedAddress
+  - type: IPAddress   # ip地址文本表示, 可配置成ip4/ip6
+    value: 192.168.136.110    # 将gw的ip指定为自定义地址
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80

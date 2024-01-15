@@ -1,0 +1,38 @@
+# HTTPRoute资源允许用户通过匹配HTTP流量并将其转发到Kubernetes后端来配置HTTP路由。
+# 目前,Envoy Gateway仅支持Service资源作为后端.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: example-route
+  labels:
+    example: http-routing
+spec:
+  parentRefs:
+    - name: eg-gw
+  # 匹配指定hostnames
+  # 这些主机名应与HTTP Host Header匹配, 以选择用于处理请求的HTTPRoute
+  hostnames:
+    - "example.com"
+    - "foo.example.com"
+  rules:
+    - backendRefs:
+        - name: example-svc
+          port: 8080
+    # 需要匹配路由前缀'/login', 才能路由到foo-svc
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /login
+      backendRefs:
+        - name: foo-svc
+          port: 8080
+    # 需要精确匹配请求头env=canary, 才能路由到bar-canary-svc
+    - matches:
+        - headers:
+            - type: Exact
+              name: env
+              value: canary
+      backendRefs:
+        - name: bar-canary-svc
+          port: 8080
+    # 还可以匹配queryParams和method, 具体可看Gateway-API文档

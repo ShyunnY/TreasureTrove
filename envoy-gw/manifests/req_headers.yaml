@@ -1,0 +1,41 @@
+# HTTPRoute资源可以使用过滤器向客户端发出重定向或重写上游发送的路径。
+# 请注意，HTTPRoute 规则不能同时使用两种过滤器类型。
+# 截至本写作时，Envoy Gateway目前仅支持核心的HTTPRoute过滤器，其中包括RequestRedirect和RequestHeaderModifier。
+# 要了解更多关于HTTP路由的信息，请参阅Gateway API文档
+# RequestHeaderModifier过滤器指示Gateways在将请求上行转发之前修改匹配规则的请求头。
+# 请注意,RequestHeaderModifier过滤器仅在请求从Envoy发送到上游服务之前修改头,**并不影响返回给下游客户端的响应头**
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-headers
+spec:
+  parentRefs:
+  - name: eg
+  hostnames:
+  - headers.example
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - group: ""
+      kind: Service
+      name: backend
+      port: 3000
+      weight: 1
+    filters:
+    - type: RequestHeaderModifier
+      # requestHeaderModifier过滤器仅在EnvoyProxy将请求代理到上游服务之前对Request Header进行修改
+      requestHeaderModifier:
+        # 添加请求头. 如果请求头不存在则添加, 如果请求头存在则将值**附加**到请求头的值上
+        add:
+        - name: "add-header"
+          value: "foo"
+        # 设置请求头. 如果请求头不存在则添加, 如果请求头存在则**替换**其值
+        set:
+        - name: "set-header"
+          value: "foo"
+        # 删除请求头
+        remove:
+        - "remove-header"

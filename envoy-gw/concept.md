@@ -61,7 +61,7 @@ Provider是一个基础设施组件，Envoy Gateway调用它来建立其运行�
 
 **Kubernetes Provider**
 
-- 使用 Kubernetes 风格的控制器来协调构成 [动态配置的](https://gateway.envoyproxy.io/v0.6.0/design/system-design/#dynamic-configuration)Kubernetes 资源。
+- 使用 Kubernetes 风格的控制器来协调构成[动态配置的](https://gateway.envoyproxy.io/v0.6.0/design/system-design/#dynamic-configuration)Kubernetes 资源。
 - 通过 Kubernetes API CRUD 操作管理数据平面。
 - 使用 Kubernetes 进行服务发现。
 - 使用 etcd（通过 Kubernetes API）来保存数据。
@@ -328,13 +328,11 @@ type RouteContext interface {
 + 支持Prometheus metrics的**PULL**模式, 并将这些metrics公开在管理地址上。
 + 支持Prometheus metrics的**PUSH**模式，从而通过gRPC或HTTP将指标发送到OpenTelemetry Stats接收器(Sink)中.
 
-
+我们可以通过Prometheus抓取EnvoyGateway控制器的`19001`端口指标信息
 
 #### **标准**
 
 Envoy Gateway的指标将建立在[OpenTelemetry](https://opentelemetry.io/)标准的基础上。所有指标都将通过[openTelemetry SDK](https://opentelemetry.io/docs/specs/otel/metrics/sdk/)进行配置，该SDK提供可连接到各种后端的中性库.
-
-
 
 #### 可扩展性 
 
@@ -729,6 +727,73 @@ envoy-gateway-system:
                 useRemoteAddress: true
           name: default/eg-gw/http
 ```
+
+
+
+
+
+### GatewayAPI Support
+
+正如在[Components](#Components)中提到的，Envoy Gateway的托管数据平面通过Kubernetes资源进行动态配置，主要使用Gateway API对象。Envoy Gateway支持使用以下Gateway API资源进行配置
+
+**GatewayClass** 
+
+GatewayClass代表"网关类"，即应由Envoy Gateway进行管理的网关类型。Envoy Gateway支持管理一个单一的GatewayClass资源，该资源匹配其配置的controllerName，并遵循Gateway API指南，以解决存在多个具有匹配controllerName的GatewayClasses时的冲突。
+
+注意：如果指定GatewayClass参数引用，则必须引用EnvoyProxy资源
+
+**Gateway**
+
+当创建引用受管GatewayClass的Gateway资源时，Envoy Gateway将创建和管理一个新的Envoy Proxy部署。引用此Gateway的Gateway API资源将配置此受管的Envoy Proxy部署。
+
+**HTTPRoute**
+
+HTTPRoute配置通过一个或多个Gateways路由HTTP流量。Envoy Gateway支持以下HTTPRoute过滤器
+
+- `requestHeaderModifier`：RequestHeaderModifiers可用于在请求被代理到其目标之前修改或添加请求头。
+- `responseHeaderModifier`：ResponseHeaderModifiers可用于在响应发送回客户端之前修改或添加响应头。
+- `requestMirror`：RequestMirrors配置请求应该被镜像到的目的地。对镜像请求的响应将被忽略。
+- `requestRedirect`：RequestRedirects配置策略，说明应如何修改匹配HTTPRoute的请求，然后重定向。
+- `urlRewrite`：UrlRewrites允许在请求被代理到其目标之前修改请求的主机名和路径。
+- `extensionRef`：ExtensionRefs由Envoy Gateway用于实现扩展过滤器。目前，Envoy Gateway支持<u>速率限制</u>和<u>请求认证过滤器</u>。有关这些过滤器的更多信息，请参阅速率限制和请求认证文档
+- Envoy Gateway**仅**支持BackendRef的一种类型，即Service。无法将流量路由到其他目的地，如任意URL。当前,HTTPBackendRef内的filters字段不受支持
+
+**TCPRoute** 
+
+TCPRoute配置通过一个或多个Gateways路由原始TCP流量。流量可以根据TCP端口号转发到所需的BackendRefs。
+
+> 注意：TCPRoute仅支持非透明模式的代理，即后端将看到Envoy Proxy实例的源IP和端口，而不是客户端的信息
+
+**UDPRoute**
+
+UDPRoute配置通过一个或多个Gateways路由原始UDP流量。流量可以根据UDP端口号转发到所需的BackendRefs。
+
+> 注意：与TCPRoutes类似，UDPRoutes仅支持非透明模式的代理，即后端将看到Envoy Proxy实例的源IP和端口，而不是客户端的信息。
+
+**GRPCRoute**
+
+GRPCRoute配置通过一个或多个Gateways路由gRPC请求。它们通过主机名、gRPC服务、gRPC方法或HTTP/2头部进行请求匹配。Envoy Gateway支持在GRPCRoutes上使用以下过滤器以提供额外的流量处理：
+
+- requestHeaderModifier：RequestHeaderModifiers可用于在请求被代理到其目标之前修改或添加请求头。
+- responseHeaderModifier：ResponseHeaderModifiers可用于在响应发送回客户端之前修改或添加响应头。
+- requestMirror：RequestMirrors配置请求应该被镜像到的目的地。对镜像请求的响应将被忽略。
+
+> 注意：
+>
+> - Envoy Gateway仅支持BackendRef的一种类型，即Service。目前不支持将流量路由到其他目的地，如任意URL。
+> - 不支持HTTPBackendRef内的filters字段。
+
+**TLSRoute**
+
+TLSRoute配置通过一个或多个Gateways路由TCP流量。然而，与TCPRoutes不同，TLSRoutes可以匹配<u>TLS特定的元数据</u>
+
+**ReferenceGrant**
+
+ReferenceGrant用于**允许资源引用位于不同命名空间中的另一个资源**。通常，在命名空间foo中创建的HTTPRoute不被允许引用命名空间bar中的Service。ReferenceGrant允许进行这种<u>跨命名空间</u>引用。Envoy Gateway支持以下ReferenceGrant用例：
+
+- 允许HTTPRoute、GRPCRoute、TLSRoute、UDPRoute或TCPRoute引用位于不同命名空间中的Service。
+- 允许HTTPRoute的requestMirror过滤器包含引用位于不同命名空间中的Service的BackendRef。
+- 允许Gateway的SecretObjectReference引用位于不同命名空间中的Secret
 
 
 
@@ -1291,6 +1356,37 @@ type RequestHeaderCustomTag struct {
 需要使用EnvoyGateway API明确启用此API
 
 > Bootstrap和Patch Policy功能类似但是粒度不相同, 前者粒度是所有新创建的EnvoyProxy, 后者粒度是某个EnvoyProxy. 我们需要根据业务, 粒度去进行选择合适的配置.
+
+
+
+由于EnvoyPatch是个实验性功能, 需要在熟悉xDS再进行配置, 并且需要在ConfigMap中开启:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-gateway-config
+  namespace: envoy-gateway-system
+data:
+  envoy-gateway.yaml: |
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: EnvoyGateway
+    provider:
+      type: Kubernetes
+    gateway:
+      controllerName: gateway.envoyproxy.io/gatewayclass-controller
+    # 开启EnvoyPatch策略
+    extensionApis:
+      enableEnvoyPatchPolicy: true
+```
+
+更新后重启EnvoyGateway控制器使其生效
+
+```shell
+$ kubectl rollout restart deployment envoy-gateway -n envoy-gateway-system
+```
+
+
 
 
 
@@ -1894,7 +1990,34 @@ Envoy可以作为TCP和UDP的非透明代理或透明代理工作，因此理论
 
 
 
+### Deployment Mode
 
+每个Envoy Gateway对应一个GatewayClass, Envoy Gateway可以接受一个GatewayClass资源。如果您实例化了多个GatewayClasses，我们建议在*不同*的命名空间中运行多个Envoy Gateway控制器，并将一个GatewayClass链接到每个控制器。我们通过下列方式进行命名空间安装.
+
+**支持的Mode**
+
+Kubernetes 
+
+默认的部署模型: Envoy Gateway会监视**所有**命名空间中的诸如Service和HTTPRoute之类的资源，并在Envoy Gateway运行的命名空间中创建托管的数据平面资源，如EnvoyProxy Deployment。 Envoy Gateway还支持命名空间部署模式，您可以通过分配`EnvoyGateway.provider.kubernetes.watch.namespaces`来监视特定命名空间中的资源，并在Envoy Gateway运行的命名空间中创建托管的数据平面资源
+**多租户** 
+
+Kubernetes 租户是组织内的一个群体（例如，一个团队或部门），他们共享组织资源。我们建议每个租户在其各自的命名空间中部署自己的Envoy Gateway控制器。以下是在不同命名空间中由市场和产品团队部署Envoy Gateway的示例。
+
+1. 部署市场部的EnvoyGateway
+
+   ```shell
+   # 设置自定义controllerName以及设置Eg监视的namespace
+   $ helm install --set config.envoyGateway.gateway.controllerName=gateway.envoyproxy.io/marketing-gatewayclass-controller --set config.envoyGateway.provider.kubernetes.watch.namespaces={marketing} eg-marketing oci://docker.io/envoyproxy/gateway-helm --version v0.6.0 -n marketing --create-namespace
+   ```
+
+2. 部署产品部的EnvoyGateway
+
+   ```shell
+   # 设置自定义controllerName以及设置Eg监视的namespace
+   $ helm install --set config.envoyGateway.gateway.controllerName=gateway.envoyproxy.io/product-gatewayclass-controller --set config.envoyGateway.provider.kubernetes.watch.namespaces={product} eg-product oci://docker.io/envoyproxy/gateway-helm --version v0.6.0 -n product --create-namespace
+   ```
+
+   
 
 ### QuickStart
 

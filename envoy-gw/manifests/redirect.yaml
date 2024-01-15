@@ -1,0 +1,25 @@
+# HTTPRoute资源可以使用过滤器向客户端发出重定向或重写上游发送的路径。
+# 请注意，HTTPRoute 规则不能同时使用两种过滤器类型。
+# 截至本写作时，Envoy Gateway目前仅支持核心的HTTPRoute过滤器，其中包括RequestRedirect和RequestHeaderModifier。
+# 要了解更多关于HTTP路由的信息，请参阅Gateway API文档
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-to-https-filter-redirect
+spec:
+  parentRefs:
+    - name: eg
+  hostnames:
+    - redirect.example
+  rules:
+    - filters:
+      # 请求重定向类型过滤器
+      - type: RequestRedirect
+        requestRedirect:
+          scheme: https
+          statusCode: 301
+          hostname: www.example.com
+          port: 443
+      backendRefs:
+      - name: backend
+        port: 3000

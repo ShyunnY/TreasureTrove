@@ -1,0 +1,39 @@
+# HTTPRoute资源可以在将响应发送到下游服务之前修改响应的头部。
+# 要了解更多关于HTTP路由的信息，请参阅Gateway API文档。
+# ResponseHeaderModifier过滤器指示Gateways在匹配规则的响应中在响应发送到下游之前修改头部。
+# 请注意，ResponseHeaderModifier过滤器仅在响应从Envoy返回到下游客户端之前修改头，并不影响转发到上游服务的请求头
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-headers
+spec:
+  parentRefs:
+  - name: eg
+  hostnames:
+  - headers.example
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - group: ""
+      kind: Service
+      name: backend
+      port: 3000
+      weight: 1
+    filters:
+    - type: ResponseHeaderModifier
+      # responseHeaderModifier过滤器仅在EnvoyProxy将响应返回给下游客户端之前对Response Header进行修改
+      responseHeaderModifier:
+        # 添加响应头. 如果响应头不存在则添加, 如果响应头存在则将值**附加**到响应头的值上
+        add:
+        - name: "add-header"
+          value: "foo"
+        # 设置响应头. 如果响应头不存在则添加, 如果响应头存在则**替换**其值
+        set:
+        - name: "set-header"
+          value: "foo"
+        # 删除响应头
+        remove:
+        - "remove-header"
