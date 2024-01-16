@@ -1,0 +1,39 @@
+# HTTPRoute资源允许提供一个或多个backendRefs。
+# 请求将被路由到这些上游。
+# 可以使用Traffic Splitting在这些后端之间划分流量，还可以将请求镜像到另一个服务。
+# 通过在HTTPRoute上使用Gateway API的HTTPRequestMirrorFilter来实现请求镜像。
+# ⭐ 当对使用HTTPRequestMirrorFilter的HTTPRoute进行请求时，响应永远不会来自过滤器中定义的backendRef。
+# ⭐ 来自镜像backendRef的响应始终被忽略。
+# 注意: 在同一个HTTPRoute规则上不支持多个HTTPRequestMirrorFilters. 当尝试这样做时,准入Webhook将拒绝该配置
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-mirror
+spec:
+  parentRefs:
+    - name: eg
+  hostnames:
+    - backends.example
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        # 请求镜像过滤器
+        - type: RequestMirror
+          requestMirror:
+            backendRef:
+              kind: Service
+              name: backend-mirror
+              port: 3000
+      # backendRef配置一个或者多个都不影响请求被路由到镜像服务上
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: backend-1
+          port: 3000
+        - group: ""
+          kind: Service
+          name: backend-2
+          port: 3000

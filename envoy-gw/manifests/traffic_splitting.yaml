@@ -1,0 +1,37 @@
+# HTTPRoute资源允许提供一个或多个backendRefs。如果请求符合HTTPRoute的规则，将被路由到这些上游。
+# **如果配置了无效的backendRef,则对所有本应发送到该后端的请求,将返回带有状态码500的HTTP响应**
+
+# backendRefs可能由于以下原因被视为无效：
+# 1.group字段配置为非""的值。目前，仅支持核心API组（通过省略group字段或将其设置为空字符串来指定）。
+# 2.kind字段配置为Service之外的任何值。Envoy Gateway目前仅支持Kubernetes Service backendRefs。
+# 3.backendRef配置了一个使用任何现有ReferenceGrants不允许的命名空间的服务。
+# 4.未配置port字段，或者配置的端口在Service上不存在。
+# 5.由backendRef配置的命名服务无法找到。
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-ingress-route
+spec:
+  parentRefs:
+  - name: eg
+  hostnames:
+  - backends.example
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    # 我们可以配置多个backendRef, 如果忽略weight权重, 则默认为1
+    # 以下配置70%流量发往backend, 30%流量发往backend-2
+    # 如果backend-2无效, 那么30%流量将会获得HTTP500响应.
+    - group: ""
+      kind: Service
+      name: backend
+      port: 3000
+      weight: 7
+    - group: ""
+      kind: Service
+      name: backend-2
+      port: 3000
+      weight: 3

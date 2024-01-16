@@ -40,7 +40,7 @@ spec:
     app: yages
 ---
 apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: GRPCRoute
+kind: GRPCRoute   # Grpc路由定义
 metadata:
   name: yages
   labels:

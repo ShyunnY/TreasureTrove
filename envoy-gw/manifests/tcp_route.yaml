@@ -1,0 +1,55 @@
+# TCPRoute提供了一种路由TCP请求的方式。
+# 当与Gateway监听器结合使用时，它可以用于将在监听器指定的端口上收到的连接转发到由TCPRoute指定的一组后端。
+
+# 安装Gateway
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: tcp-gateway
+spec:
+  gatewayClassName: eg
+  listeners:
+    - name: foo
+      # listener protocol配置成tcp
+      protocol: TCP
+      port: 8088
+      allowedRoutes:
+        kinds:
+          - kind: TCPRoute
+    - name: bar
+    # listener protocol配置成tcp
+      protocol: TCP
+      port: 8089
+      allowedRoutes:
+        kinds:
+          - kind: TCPRoute
+---
+# 安装TcpRoute
+# 使用sectionName可以让我们分离不同流量
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata:
+  name: tcp-app-1
+spec:
+  parentRefs:
+  - name: tcp-gateway
+    # 通过sectionName指定gateway的Listener
+    sectionName: foo
+  rules:
+  - backendRefs:
+    - name: foo
+      port: 3001
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata:
+  name: tcp-app-2
+spec:
+  parentRefs:
+  - name: tcp-gateway
+    # 通过sectionName指定gateway的Listener
+    sectionName: bar
+  rules:
+  - backendRefs:
+    - name: bar
+      port: 3002

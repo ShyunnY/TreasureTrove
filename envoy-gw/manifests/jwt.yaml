@@ -1,0 +1,29 @@
+# WT认证会在将请求路由到后端服务**之前**检查传入请求是否有有效的JWT
+# 目前, Envoy Gateway仅支持从HTTP头部验证JWT, 例如 Authorization: Bearer <token>.
+# Envoy Gateway引入了一个名为SecurityPolicy的新CRD,
+# 允许用户配置JWT认证。此实例化的资源可以与Gateway、HTTPRoute或GRPCRoute资源关联
+# 根据关联的对象来控制Jwt控制的粒度
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: jwt-example
+spec:
+  # 将其作用到HTTPRoute上, 该Route的所有路由都需要使用jwks进行认证
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: foo
+  # Jwt配置
+  jwt:
+    providers:
+    - name: example   # jwt provider唯一标识名
+      issuer: shyunn.io
+      audiences: 
+        - jane
+      # 将JWT claim提取到请求头上
+      # 以下将Jwt claim的age值设置到'x-jwt-age'请求头上, 并发往上游服务器
+      claimToHeaders:
+        claim: claim.age
+        header: x-jwt-age
+      remoteJWKS:
+        uri: https://raw.githubusercontent.com/envoyproxy/gateway/main/examples/kubernetes/jwt/jwks.json

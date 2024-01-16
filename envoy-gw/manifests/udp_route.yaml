@@ -1,0 +1,34 @@
+# UDPRoute资源允许用户通过匹配UDP流量并将其转发到Kubernetes后端来配置UDP路由。
+# 注意：UDPRoute允许Envoy Gateway在UDP客户端和服务器之间充当非透明代理。
+# 非透明性意味着上游服务器将看到**Gateway的源IP和端口**, 而不是客户端的. 有关更多信息,请参阅Envoy的UDP代理文档
+
+# 安装Gateway
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg
+spec:
+  gatewayClassName: eg
+  listeners:
+    - name: foo-udp
+      # listener protocol配置成UDP
+      protocol: UDP
+      port: 10010
+      allowedRoutes:
+        kinds:
+          - kind: UDPRoute
+---
+# 安装UDPRoute
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: UDPRoute
+metadata:
+  name: coredns
+spec:
+  parentRefs:
+    - name: eg
+      sectionName: foo-udp  # 选择eg上的'foo-udp' Listener
+  rules:
+    - backendRefs:
+          # 默认是当前namespace下的Service
+        - name: coredns
+          port: 53
