@@ -22,6 +22,7 @@ spec:
       filters:
         # 请求镜像过滤器
         - type: RequestMirror
+          # 将流量镜像一份到backend-mirror Service上
           requestMirror:
             backendRef:
               kind: Service

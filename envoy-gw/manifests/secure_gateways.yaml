@@ -16,3 +16,66 @@ spec:
         kind: Secret
         name: foo-cert
       mode: Terminate
+---
+# Gateway 可以配置为引用不同命名空间中的证书。这是通过在目标命名空间中创建的 ReferenceGrant 实现的。
+# 如果没有 ReferenceGrant，跨命名空间引用将被视为无效
+# 创建一个ReferenceGrant, 允许default的Gateway可以访问'envoy-gateway-system'namespace下的Secret
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: ReferenceGrant
+metadata:
+  name: example
+  namespace: envoy-gateway-system
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    namespace: default
+  to:
+  - group: ""
+    kind: Secret      
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg
+spec:
+  gatewayClassName: eg
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        # 此时我们可以跨namespace引用envoy-gateway-system下的Secret
+        certificateRefs:
+          - kind: Secret    ## TLS类型的Kubernetes Secret
+            group: ""
+            name: example-cert
+            namespace: envoy-gateway-system
+
+
+---
+# 我们还可以在同一个网关监听器上配置多个证书, 实现Envoy能够根据客户端请求中的SNI（Server Name Indication）为客户端提供适当的证书            
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg
+spec:
+  gatewayClassName: eg
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        # 配置多个cert, 让EnvoyProxy可以根据其SNI进行选择合适的证书进行校验
+        certificateRefs:
+          - kind: Secret    
+            group: ""
+            name: hello-com-cert
+          - kind: Secret
+            group: ""
+            name: world-com-cert

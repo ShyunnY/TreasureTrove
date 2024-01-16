@@ -692,43 +692,289 @@ $ egctl [command] [entity] [name] [flags]
 
 举几个栗子:
 
-```shell
-# 检索QuickStart.yaml中gateway配置的EnvoyProxy
-# 我们去掉冗余数据后可以看到, EnvoyProxy监听10080端口, 我们在Gateway中配置的Listener.port实际上是配置在EnvoyProxy前面的Service上.
-# 然后EnvoyProxy使用xDS中的rDS进行路由匹配, 如果匹配, 再将流量转发到cDS上游
-$ egctl config envoy-proxy listener envoy-default-eg-gw-63522087-7b5fdfc667-7xmk8 -o yaml
-envoy-gateway-system:
-  envoy-default-eg-gw-63522087-7b5fdfc667-7xmk8:
-    dynamicListeners:
-    - activeState:
-        listener:
-          '@type': type.googleapis.com/envoy.config.listener.v3.Listener
-          address:
-            socketAddress:
-              address: 0.0.0.0
-              portValue: 10080
-          defaultFilterChain:
-            filters:
-            - name: envoy.filters.network.http_connection_manager
-              typedConfig:
-                '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-                httpFilters:
-                - name: envoy.filters.http.router
-                  typedConfig:
-                    '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-                rds:
-                  configSource:
-                    ads: {}
-                    resourceApiVersion: V3
-                  routeConfigName: default/eg-gw/http
-                statPrefix: http
-                upgradeConfigs:
-                - upgradeType: websocket
-                useRemoteAddress: true
-          name: default/eg-gw/http
-```
+1. 获取指定EnvoyProxy的listener xDS配置:
 
+   ```shell
+   # 检索QuickStart.yaml中gateway配置的EnvoyProxy
+   # 我们去掉冗余数据后可以看到, EnvoyProxy监听10080端口, 我们在Gateway中配置的Listener.port实际上是配置在EnvoyProxy前面的Service上.
+   # 然后EnvoyProxy使用xDS中的rDS进行路由匹配, 如果匹配, 再将流量转发到cDS上游
+   $ egctl config envoy-proxy listener envoy-default-eg-gw-63522087-7b5fdfc667-7xmk8 -o yaml
+   envoy-gateway-system:
+     envoy-default-eg-gw-63522087-7b5fdfc667-7xmk8:
+       dynamicListeners:
+       - activeState:
+           listener:
+             '@type': type.googleapis.com/envoy.config.listener.v3.Listener
+             address:
+               socketAddress:
+                 address: 0.0.0.0
+                 portValue: 10080
+             defaultFilterChain:
+               filters:
+               - name: envoy.filters.network.http_connection_manager
+                 typedConfig:
+                   '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                   httpFilters:
+                   - name: envoy.filters.http.router
+                     typedConfig:
+                       '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                   rds:
+                     configSource:
+                       ads: {}
+                       resourceApiVersion: V3
+                     routeConfigName: default/eg-gw/http
+                   statPrefix: http
+                   upgradeConfigs:
+                   - upgradeType: websocket
+                   useRemoteAddress: true
+             name: default/eg-gw/http
+   ```
 
+2. 将GatewayAPI转换成Envoy的xDSAPI:
+
+   ```sh
+   $ cat <<EOF | egctl x translate --from gateway-api --to xds -f -
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: GatewayClass
+   metadata:
+     name: eg
+   spec:
+     controllerName: gateway.envoyproxy.io/gatewayclass-controller
+   ---
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: Gateway
+   metadata:
+     name: eg
+     namespace: default
+   spec:
+     gatewayClassName: eg
+     listeners:
+       - name: http
+         protocol: HTTP
+         port: 80
+   ---
+   apiVersion: v1
+   kind: Namespace
+   metadata:
+     name: default 
+   ---
+   apiVersion: v1
+   kind: Service
+   metadata:
+     name: backend
+     namespace: default
+     labels:
+       app: backend
+       service: backend
+   spec:
+     clusterIP: "1.1.1.1"
+     type: ClusterIP
+     ports:
+       - name: http
+         port: 3000
+         targetPort: 3000
+         protocol: TCP
+     selector:
+       app: backend
+   ---
+   apiVersion: gateway.networking.k8s.io/v1
+   kind: HTTPRoute
+   metadata:
+     name: backend
+     namespace: default
+   spec:
+     parentRefs:
+       - name: eg
+     hostnames:
+       - "www.example.com"
+     rules:
+       - backendRefs:
+           - group: ""
+             kind: Service
+             name: backend
+             port: 3000
+             weight: 1
+         matches:
+           - path:
+               type: PathPrefix
+               value: /
+   EOF
+   
+   
+   # 输出:
+   configKey: default-eg
+   configs:
+   - '@type': type.googleapis.com/envoy.admin.v3.BootstrapConfigDump
+     bootstrap:
+       admin:
+         accessLog:
+         - name: envoy.access_loggers.file
+           typedConfig:
+             '@type': type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+             path: /dev/null
+         address:
+           socketAddress:
+             address: 127.0.0.1
+             portValue: 19000
+       dynamicResources:
+         cdsConfig:
+           apiConfigSource:
+             apiType: DELTA_GRPC
+             grpcServices:
+             - envoyGrpc:
+                 clusterName: xds_cluster
+             setNodeOnFirstMessageOnly: true
+             transportApiVersion: V3
+           resourceApiVersion: V3
+         ldsConfig:
+           apiConfigSource:
+             apiType: DELTA_GRPC
+             grpcServices:
+             - envoyGrpc:
+                 clusterName: xds_cluster
+             setNodeOnFirstMessageOnly: true
+             transportApiVersion: V3
+           resourceApiVersion: V3
+       layeredRuntime:
+         layers:
+         - name: runtime-0
+           rtdsLayer:
+             name: runtime-0
+             rtdsConfig:
+               apiConfigSource:
+                 apiType: DELTA_GRPC
+                 grpcServices:
+                 - envoyGrpc:
+                     clusterName: xds_cluster
+                 transportApiVersion: V3
+               resourceApiVersion: V3
+       staticResources:
+         clusters:
+         - connectTimeout: 10s
+           loadAssignment:
+             clusterName: xds_cluster
+             endpoints:
+             - lbEndpoints:
+               - endpoint:
+                   address:
+                     socketAddress:
+                       address: envoy-gateway
+                       portValue: 18000
+           name: xds_cluster
+           transportSocket:
+             name: envoy.transport_sockets.tls
+             typedConfig:
+               '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+               commonTlsContext:
+                 tlsCertificateSdsSecretConfigs:
+                 - name: xds_certificate
+                   sdsConfig:
+                     pathConfigSource:
+                       path: /sds/xds-certificate.json
+                     resourceApiVersion: V3
+                 tlsParams:
+                   tlsMaximumProtocolVersion: TLSv1_3
+                 validationContextSdsSecretConfig:
+                   name: xds_trusted_ca
+                   sdsConfig:
+                     pathConfigSource:
+                       path: /sds/xds-trusted-ca.json
+                     resourceApiVersion: V3
+           type: STRICT_DNS
+           typedExtensionProtocolOptions:
+             envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+               '@type': type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+               explicitHttpConfig:
+                 http2ProtocolOptions: {}
+   - '@type': type.googleapis.com/envoy.admin.v3.ClustersConfigDump
+     dynamicActiveClusters:
+     - cluster:
+         '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
+         commonLbConfig:
+           localityWeightedLbConfig: {}
+         connectTimeout: 10s
+         dnsLookupFamily: V4_ONLY
+         loadAssignment:
+           clusterName: default-backend-rule-0-match-0-www.example.com
+           endpoints:
+           - lbEndpoints:
+             - endpoint:
+                 address:
+                   socketAddress:
+                     address: 1.1.1.1
+                     portValue: 3000
+               loadBalancingWeight: 1
+             loadBalancingWeight: 1
+             locality: {}
+         name: default-backend-rule-0-match-0-www.example.com
+         outlierDetection: {}
+         type: STATIC
+   - '@type': type.googleapis.com/envoy.admin.v3.ListenersConfigDump
+     dynamicListeners:
+     - activeState:
+         listener:
+           '@type': type.googleapis.com/envoy.config.listener.v3.Listener
+           accessLog:
+           - filter:
+               responseFlagFilter:
+                 flags:
+                 - NR
+             name: envoy.access_loggers.file
+             typedConfig:
+               '@type': type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+               path: /dev/stdout
+           address:
+             socketAddress:
+               address: 0.0.0.0
+               portValue: 10080
+           defaultFilterChain:
+             filters:
+             - name: envoy.filters.network.http_connection_manager
+               typedConfig:
+                 '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                 accessLog:
+                 - name: envoy.access_loggers.file
+                   typedConfig:
+                     '@type': type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                     path: /dev/stdout
+                 httpFilters:
+                 - name: envoy.filters.http.router
+                   typedConfig:
+                     '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                 rds:
+                   configSource:
+                     apiConfigSource:
+                       apiType: DELTA_GRPC
+                       grpcServices:
+                       - envoyGrpc:
+                           clusterName: xds_cluster
+                       setNodeOnFirstMessageOnly: true
+                       transportApiVersion: V3
+                     resourceApiVersion: V3
+                   routeConfigName: default-eg-http
+                 statPrefix: http
+                 upgradeConfigs:
+                 - upgradeType: websocket
+                 useRemoteAddress: true
+           name: default-eg-http
+   - '@type': type.googleapis.com/envoy.admin.v3.RoutesConfigDump
+     dynamicRouteConfigs:
+     - routeConfig:
+         '@type': type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+         name: default-eg-http
+         virtualHosts:
+         - domains:
+           - www.example.com
+           name: default-eg-http-www.example.com
+           routes:
+           - match:
+               prefix: /
+             route:
+               cluster: default-backend-rule-0-match-0-www.example.com
+   resourceType: all
+   ```
+
+   
 
 
 
@@ -1575,6 +1821,7 @@ Envoy Gateway将通过以下方式利用Envoy代理的这一功能：
                type: PathPrefix
                value: /foo
          # 指定拓展的filter
+         # 引用自定义的filterCR
          filters:
            - type: ExtensionRef
              extensionRef:
@@ -1724,7 +1971,7 @@ Envoy Gateway将通过以下方式利用Envoy代理的这一功能：
          extensionRef:
            group: gateway.envoyproxy.io
            kind: RateLimitFilter
-           name: ratelimit-per-user 
+           name: ratelimit-per-ip
        backendRefs:
        - name: backend
          port: 3000
@@ -1873,7 +2120,48 @@ Envoy Gateway将通过以下方式利用Envoy代理的这一功能：
              port: 3000
    ```
 
-   
+
+
+
+#### Global Rate Limit
+
+EnvoyGateway提供了全局速率控制, 要使用此功能, 需要通过Redis作为缓存层. 全局速率控制基于[EnvoyRateLimit](https://github.com/envoyproxy/ratelimit).
+
+要启动全局速率控制, 需要对EnvoyGateway进行配置, EnvoyGateway的配置默认在`envoy-gateway-system`namespace下的`envoy-gateway-config`ConfigMap中:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-gateway-config
+  namespace: envoy-gateway-system
+data:
+  envoy-gateway.yaml: |
+    apiVersion: gateway.envoyproxy.io/v1alpha1
+    kind: EnvoyGateway
+    provider:
+      type: Kubernetes
+    gateway:
+      controllerName: gateway.envoyproxy.io/gatewayclass-controller
+    # 开启全局速率, 配置Redis缓存层
+    rateLimit:
+      backend:
+      	# Redis类型
+        type: Redis
+        # Redis路径
+        redis:
+          url: redis.redis-system.svc.cluster.local:6379
+```
+
+更新完ConfigMap后, 重启EnvoyGateway控制器使配置生效:
+
+```sh
+$ kubectl rollout restart deployment envoy-gateway -n envoy-gateway-system
+```
+
+
+
+
 
 
 
