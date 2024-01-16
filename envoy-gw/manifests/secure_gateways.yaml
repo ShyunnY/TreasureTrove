@@ -1,0 +1,18 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg
+spec:
+  gatewayClassName: eg
+  # 可以创建多个HTTPS监听器
+  listeners:
+  - name: https
+    port: 443
+    hostname: www.hello.com
+    protocol: TLS
+    tls:
+      certificateRefs:
+      - group: ""
+        kind: Secret
+        name: foo-cert
+      mode: Terminate

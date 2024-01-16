@@ -1,0 +1,31 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: eg
+spec:
+  gatewayClassName: eg
+  listeners:
+  - allowedRoutes:
+      namespaces:
+        from: Same
+    name: https
+    port: 443
+    protocol: TLS
+    # 配置监听器TLS
+    # 如果协议字段为"HTTPS"或"TLS",则此字段为必填字段.
+    # 如果协议字段为"HTTP","TCP"或"UDP",则该字段设置无效
+    tls:
+      # CertificateRefs包含一系列对Kubernetes对象的引用,其中包含TLS证书和私钥.这些证书用于为与关联Listener的主机名匹配的请求建立TLS握手
+      # 对不同命名空间中的资源的引用无效,除非目标命名空间中存在允许附加证书的ReferenceGrant
+      certificateRefs:
+      # 可以是自己实现的CRD, 默认是secret
+      # 注意: 如果跨namespace引用, 需要确保引用命名空间中需要有一个ReferenceGrant, 并且允许引用.
+      - group: ""
+        kind: Secret
+        name: example-cert
+      # 可选: 
+      # Passthrough: 在此模式下,TLS会话不会由网关终止,而是由上游服务进行处理
+      # Terminate: 在此模式下,下游客户端和网关之间的TLS会话在网关处终止
+      mode: Passthrough
+---
+# 注意:  Route需要配置成TLSRoute    
