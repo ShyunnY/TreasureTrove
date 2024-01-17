@@ -1,0 +1,35 @@
+apiVersion: "gateway.networking.k8s.io/v1alpha2"
+kind: GatewayClass
+metadata: # metadata字段参考Kubernetes metadata定义
+  name: cluster-gateway-class
+spec:
+  # ControllerName 是管理此类网关的控制器的名称
+  # 用于区分多个不同的网关控制器
+  controllerName: "example.net/gateway-controller"
+  # 用于配置GatewayClass的配置
+  # 可以是自定义的CRD
+  parametersRef:
+    group: example.net/v1alpha1
+    kind: Config
+    name: internet-gateway-config
+  description: |
+    this is gateywa class
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: ReferenceGrant
+metadata:
+  name: ref-demo
+  namespace: ref-demo
+spec:
+  # From部分描述了可以引用"To"中描述的资源的受信任命名空间和种类。
+  # 列表中的每个条目都必须被视为可以从中引用的另一个位置,或者换句话说,这些条目必须使用OR组合
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: foo
+  # To部分描述了可能被“From”中描述的资源引用的资源。
+  # 列表中的每个条目都必须被视为引用可以有效到达的另一个位置,或者换句话说,这些条目必须使用OR组合
+  to:
+    - group: ""
+      kind: Service
+      # 可以不用显式配置namespace. 默认情况下认为ReferenceGrant只能用于允许对与ReferenceGrant**相同命名空间**
