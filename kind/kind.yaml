@@ -1,0 +1,89 @@
+# 我们可以通过KindCRD去自定定义配置K8sCluster
+#  CLI的参数优先于配置文件中的等效参数
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+# 集群名称, 在多集群中用于切换集群
+name: dev-k8s
+# 可以在此启用任何功能门,使用"Name": true或使用"Name": false在此禁用. 然而,并非所有功能门都经过测试
+featureGates:
+  "CSIMigration": true
+# 可以使用runtimeConfig映射到kube-apiserver flags "--runtime-config"的键来配置K8s api-server运行时配置
+runtimeConfig:
+  "api/alpha": "false"
+# 配置集群网络
+# KIND支持IPv4,IPv6和双栈集群
+networking:
+  # IP协议族, 可配置ipv4,ipv6,dual(双栈协议)
+  ipFamily: ipv6
+  # 我们可以修改api-server的地址值, 但是出于安全原因,强烈建议将此保持默认值
+  apiServerAddress: 127.0.0.1
+  # 默认情况下, API服务器侦听在一个随机打开的端口上.
+  # 我们可以选择一个特定的端口, 但在大多数情况下可能不需要. 使用随机端口使得更容易启动多个集群
+  # 实际上, kind启动本地测试集群, 我们大多数不太关注映射的端口值
+  apiServerPort: 6443
+  # Pod子网配置
+  # 默认情况下, kind使用10.244.0.0/16 IPv4的Pod子网和fd00:10:244::/56IPv6的Pod子网
+  podSubnet: "10.244.0.0/16"
+  # Service子网配置
+  # 默认情况下, kind使用10.96.0.0/16 IPv4的Service子网和fd00:10:96::/112IPv6的Service子网
+  serviceSubnet: "10.96.0.0/12"
+  # 禁用默认的CNI插件
+  # kind提供了一个基于CNI标准的简单网络插件, 我们可以禁用默认的网络插件来安装calico之类的CNI插件
+  disableDefaultCNI: true
+  # kube proxy配置
+  # 默认使用iptables, 我们可以配置none禁用kube proxy
+  kubeProxyMode: "ipvs"
+# 用于配置cluster的节点
+# 下列我们配置了一主三从cluster集群,虽然它们不会增加更多的实际计算能力, 并且具有有限的隔离性, 但这对于测试滚动更新等操作可能很有用.
+# api-server和其他控制平面组件将位于控制平面节点上. 除非您正在测试Kubernetes本身, 否则可能不需要这个配置
+# 换句话说: k8s cluster中的控制平面组件都位于control-plane中, 大部分时候, 我们只需要一主一从配置快速启动.
+nodes:
+  - role: control-plane
+    # 节点镜像配置, 我们可以在: https://github.com/kubernetes-sigs/kind/releases找到可用的镜像
+    # 注意, 配置镜像需要携带@sha256 digest
+    image: kindest/node:v1.29.1@sha256:a0cc28af37cf39b019e2b448c54d1a3f789de32536cb5a5db61a49623e527144
+    # 我们还可以使用额外的挂载将主机上的存储传递给一个Kind节点, 以便进行数据持久化、通过代码进行挂载等操作
+    extraMounts:
+      # 将宿主机上的/path/to/my/files挂载到节点上的/files
+      - hostPath: /path/to/my/files
+        containerPath: /files
+        # 以下是extraMounts的完整字段, 实际上大部分时候我们只需要上面2个字段即可
+      - hostPath: /path/to/my/other-files/
+        containerPath: /other-files
+        # 如果设置, 将挂载为只读. 默认为false
+        readOnly: true
+        # 如果设置, 挂载需要进行SELinux重新标记. 默认为false
+        selinuxRelabel: false
+        # 设置传播模式(None,HostToContainer或Bidirectional), 默认为None
+        # 详情请见: https://kubernetes.io/docs/concepts/storage/volumes/#mount-propagation
+        propagation: None
+    # extraPortMappings可用于端口转发到kind节点. 换句话说: 它将docker的port转发到节点容器内部的端口上
+    # 当我们可以设置一个端口映射到集群中的ingress, 这样可以将外部流量引入集群内部
+    # 以下配置代表访问宿主机1880, 将会映射到节点容器内部2880端口(如果一个Pod hostPort配置为2880, 我们则可以直接访问该Pod)
+    # 注意: 如果配置Service type=NodePort, kind节点的containerPort和Serice NodePort需要相同
+    extraPortMappings:
+        # 节点容器的port
+      - containerPort: 2880
+        # 宿主机port
+        hostPort: 1880
+        # 可选: 设置主机上的bind地址
+        # 默认为: 0.0.0.0
+        listenAddress: "127.0.0.1"
+        # 可选: 将协议设置为TCP、UDP、SCTP中的一个
+        protocol: TCP
+    # 添加额外的Labels到节点上
+    # 额外的Labels对于使用nodeSelectors可能很有用
+    labels:
+      orange.proj/env: dev
+    # kind使用kubeadm来配置集群节点.
+    # kind在第一个control-plane节点上运行kubeadm init, 我们可以通过使用kubeadm InitConfiguration Spec来自定义标志
+    # 如果您想要进行更多kubeadm init自定义配置, 可以使用四种配置类型: InitConfiguration、ClusterConfiguration、KubeProxyConfiguration、KubeletConfiguration
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+        kubeletExtraArgs:
+          node-labels: "my-label=true"
+  - role: worker
+  - role: worker
+  - role: worker
