@@ -4,7 +4,7 @@ metadata:
   name: ratelimit-config
   namespace: default
 data:
-  config.yaml: |
+  demo.yaml: |
     domain: rl
     descriptors:
       - key: user
@@ -12,6 +12,14 @@ data:
         rate_limit:
           unit: minute
           requests_per_unit: 1
+  demo1.yaml: |
+    domain: rl2
+    descriptors:
+      - key: user
+        value: tome
+        rate_limit:
+          unit: minute
+          requests_per_unit: 2
 ---
 apiVersion: v1
 kind: Pod
@@ -27,6 +35,8 @@ spec:
       command:
         - /bin/ratelimit
       env:
+        - name: LOG_FORMAT
+          value: json
         - name: LOG_LEVEL
           value: debug
         - name: REDIS_SOCKET_TYPE
@@ -41,17 +51,26 @@ spec:
           value: "false"
         - name: USE_STATSD
           value: "false"
+        - name: MERGE_DOMAIN_CONFIG
+          value: "true"
       ports:
         - containerPort: 8080
         - containerPort: 8081
         - containerPort: 6070
       volumeMounts:
         - name: ratelimit-config
-          mountPath: /data/ratelimit/
+          mountPath: /data/ratelimit/config
+          # 指定subPath为config, 这样就不会使用"..data"目录接受configMap的更新
+          subPath: config
   volumes:
     - name: ratelimit-config
       configMap:
         name: ratelimit-config
+        items:
+          - key: demo.yaml
+            path: config/demo.yaml
+          - key: demo1.yaml
+            path: config/demo1.yaml          
 ---
 apiVersion: v1
 kind: Service
